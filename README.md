@@ -4,13 +4,80 @@ Community management infrastructure for ATProto applications.
 
 ## Features
 - App registration and API key management
-- Community creation and management  
+- Community creation and management
 - Membership tracking via ATProto records
 - Admin permissions and OAuth
+
+## Required Environment Variables
+
+The following environment variables are **required** for the API server to start:
+
+### Security (Critical)
+
+- **`ENCRYPTION_KEY`** - 64-character hexadecimal string (32 bytes) used for encrypting secrets at rest
+  - Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+  - Must be exactly 64 characters (0-9, a-f, A-F)
+  - Required for encrypting community app passwords and API keys
+
+- **`COOKIE_SECRET`** - Secret key for session cookie signing
+  - Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
+  - Must be at least 32 characters
+  - Cannot be left at default placeholder values
+
+- **`DATABASE_URL`** - PostgreSQL connection string
+  - Format: `postgresql://user:password@host:port/database`
+  - Example: `postgresql://opensocial_api:password@localhost:5432/opensocial`
+
+### Environment
+
+- **`NODE_ENV`** - Application environment (`development`, `production`, `test`)
+  - Must be set to `production` when deploying to production (with HTTPS SERVICE_URL)
+  - Defaults to `development`
+
+### Optional
+
+- `PORT` - Server port (default: 3001)
+- `LOG_LEVEL` - Logging level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` (default: `info`)
+- `SERVICE_URL` - Public URL of this API service (for OAuth callbacks)
+- `PLC_URL` - ATProto PLC directory URL (default: `https://plc.directory`)
+- `PDS_URL` - ATProto PDS URL (default: `https://bsky.social`)
+- `PRIVATE_KEYS` - JSON array of JWK private keys for OAuth
 
 ## Quick Start
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for complete setup instructions.
+
+### Basic Setup
+
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Generate required secrets:
+   ```bash
+   # Generate ENCRYPTION_KEY
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+   # Generate COOKIE_SECRET
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+   ```
+
+3. Update `.env` with your values:
+   ```bash
+   DATABASE_URL=postgresql://user:password@localhost:5432/opensocial
+   ENCRYPTION_KEY=<generated-encryption-key>
+   COOKIE_SECRET=<generated-cookie-secret>
+   NODE_ENV=development
+   ```
+
+4. Start the server:
+   ```bash
+   npm install
+   npm run dev
+   ```
+
+The server will validate all required environment variables at startup and fail fast with clear error messages if any are missing or invalid.
 
 ## API Documentation
 
