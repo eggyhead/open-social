@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.github
+*.log
+coverage
+db-backups
+.vscode
+test
+*.test.ts
+vitest.config.ts
+vitest.config.devnet.ts
