@@ -17,8 +17,18 @@ import { createRateLimiter } from './middleware/rateLimit';
 import { csrfProtection } from './middleware/csrf';
 import { logger } from './lib/logger';
 import { requestLogger } from './middleware/requestLogger';
+import { validateEnvironment } from './lib/validateEnv';
 
 dotenv.config();
+
+// Validate environment variables before starting
+try {
+  validateEnvironment();
+} catch (error) {
+  logger.fatal({ error }, 'Environment validation failed');
+  console.error('\n' + (error instanceof Error ? error.message : String(error)) + '\n');
+  process.exit(1);
+}
 
 const app = express();
 const PORT = config.port;

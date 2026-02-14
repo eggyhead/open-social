@@ -33,7 +33,7 @@ export function csrfProtection(req: Request, res: Response, next: NextFunction) 
     if (req.method === 'GET' && !req.cookies?.[CSRF_COOKIE]) {
       const token = crypto.randomBytes(32).toString('hex');
       res.cookie(CSRF_COOKIE, token, {
-        httpOnly: false, // Client needs to read this
+        httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         maxAge: 24 * 60 * 60 * 1000,
@@ -62,7 +62,7 @@ export function csrfProtection(req: Request, res: Response, next: NextFunction) 
 export function setCsrfToken(res: Response): string {
   const token = crypto.randomBytes(32).toString('hex');
   res.cookie(CSRF_COOKIE, token, {
-    httpOnly: false,
+    httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
     maxAge: 24 * 60 * 60 * 1000,

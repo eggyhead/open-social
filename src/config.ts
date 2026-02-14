@@ -13,6 +13,6 @@ export const config = {
     ? JSON.parse(process.env.PRIVATE_KEYS)
     : [],
   pdsUrl: process.env.PDS_URL || 'https://bsky.social',
-  cookieSecret: process.env.COOKIE_SECRET || 'open-social-default-secret-change-in-production',
+  cookieSecret: process.env.COOKIE_SECRET || '',
   encryptionKey: process.env.ENCRYPTION_KEY || '',
 } as const;
