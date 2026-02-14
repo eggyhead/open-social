@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { logger } from '../lib/logger';
+import { retry, isTransientError } from '../lib/retry';
 
 export type WebhookEvent =
   | 'member.joined'
@@ -48,12 +49,26 @@ export function createWebhookService(db: Kysely<Database>) {
 
       // Fire and forget \u2014 don't block the response
       for (const webhook of matchingWebhooks) {
-        fireWebhook(webhook.url, payload, webhook.secret).catch((err) => {
-          logger.error({ 
-            webhookUrl: webhook.url, 
-            event, 
-            error: err.message 
-          }, 'Webhook delivery failed');
+        retry(
+          () => fireWebhook(webhook.url, payload, webhook.secret),
+          {
+            maxRetries: 3,
+            initialDelay: 1000,
+            shouldRetry: (error) => isTransientError(error),
+            context: {
+              webhookUrl: webhook.url,
+              event,
+              communityDid,
+            },
+          }
+        ).catch((err) => {
+          logger.error({
+            webhookUrl: webhook.url,
+            event,
+            communityDid,
+            error: err.message,
+            errorStack: err.stack,
+          }, 'Webhook delivery failed after all retries');
         });
       }
     } catch (err) {

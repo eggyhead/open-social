@@ -21,6 +21,7 @@ import { createAuditLogService } from '../services/auditLog';
 import { createWebhookService } from '../services/webhook';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import { logWarning } from '../lib/errors';
 
 /**
  * Resolve a Bluesky profile to get handle, display name, and avatar.
@@ -221,7 +222,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
             },
           });
         }
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to remove admin from admin list when leaving', { error: e, communityDid, userDid });
+      }
 
       // Find and delete the membershipProof
       let memberCursor: string | undefined;
@@ -301,7 +304,8 @@ export function createMemberRouter(db: Kysely<Database>): Router {
           if (!isAdminInList(adminDid, admins)) {
             return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
           }
-        } catch {
+        } catch (e) {
+          logger.error({ error: e, communityDid, adminDid }, 'Failed to verify admin status');
           return res.status(500).json({ error: 'Failed to verify admin status' });
         }
       }
@@ -336,7 +340,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
           rkey: 'self',
         });
         admins = (adminsRes.data.value as any)?.admins || [];
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to fetch admins list', { error: e, communityDid });
+      }
 
       // Build member list
       let members = allProofs.map((record: any) => ({
@@ -1018,7 +1024,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         });
         const admins = (adminsRes.data.value as any)?.admins || [];
         isAdmin = isAdminInList(userDid, admins);
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to check admin status', { error: e, communityDid, userDid });
+      }
 
       // Check pending status
       let isPending = false;
