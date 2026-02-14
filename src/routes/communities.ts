@@ -253,28 +253,42 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
               } catch {}
             }
 
-            // Get member count
-            try {
-              const membersRes = await agent.api.com.atproto.repo.listRecords({
-                repo: community.did,
-                collection: 'community.opensocial.membershipProof',
-                limit: 1,
-              });
-              // Use cursor-based counting: fetch all to count
-              let count = membersRes.data.records.length;
-              let memberCursor = membersRes.data.cursor;
-              while (memberCursor) {
-                const more = await agent.api.com.atproto.repo.listRecords({
+            // Get member count - use cached value if available and recent
+            if (community.member_count !== null && community.metadata_fetched_at) {
+              const cacheAge = Date.now() - community.metadata_fetched_at.getTime();
+              const cacheValid = cacheAge < 24 * 60 * 60 * 1000; // 24 hours
+              if (cacheValid) {
+                memberCount = community.member_count;
+              }
+            }
+
+            // If not cached or stale, fetch but limit to prevent OOM
+            if (memberCount === 0) {
+              try {
+                const membersRes = await agent.api.com.atproto.repo.listRecords({
                   repo: community.did,
                   collection: 'community.opensocial.membershipProof',
-                  cursor: memberCursor,
                   limit: 100,
                 });
-                count += more.data.records.length;
-                memberCursor = more.data.cursor;
-              }
-              memberCount = count;
-            } catch {}
+                // For performance, only count precisely up to 100, estimate beyond
+                let count = membersRes.data.records.length;
+                let memberCursor = membersRes.data.cursor;
+                let iterations = 0;
+                while (memberCursor && iterations < 9) { // Max 1000 members counted precisely
+                  const more = await agent.api.com.atproto.repo.listRecords({
+                    repo: community.did,
+                    collection: 'community.opensocial.membershipProof',
+                    cursor: memberCursor,
+                    limit: 100,
+                  });
+                  count += more.data.records.length;
+                  memberCursor = more.data.cursor;
+                  iterations++;
+                }
+                // If there are more, we stopped early - indicate 1000+
+                memberCount = memberCursor ? 1000 : count;
+              } catch {}
+            }
           } catch {}
 
           // Update metadata cache (fire-and-forget)

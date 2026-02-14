@@ -306,7 +306,10 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         }
       }
 
-      // Fetch all membershipProof records
+      // Fetch membershipProof records with reasonable limit
+      // Don't load all members into memory - fetch enough to satisfy pagination + buffer
+      const offset = cursor ? decodeCursor(cursor) : 0;
+      const maxFetch = Math.min(offset + limit * 3, 1000); // Cap at 1000 members
       let atCursor: string | undefined;
       const allProofs: any[] = [];
       do {
@@ -318,6 +321,10 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         });
         allProofs.push(...response.data.records);
         atCursor = response.data.cursor;
+        // Stop if we have enough records or hit our safety limit
+        if (allProofs.length >= maxFetch) {
+          break;
+        }
       } while (atCursor);
 
       // Get admins list
@@ -348,12 +355,11 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         );
       }
 
-      const total = members.length;
-
-      // Apply pagination
-      const offset = cursor ? decodeCursor(cursor) : 0;
+      // Apply pagination (offset already calculated above)
       const page = members.slice(offset, offset + limit);
-      const hasMore = offset + limit < total;
+      // We might not have fetched all members, so indicate there may be more
+      const hasMore = allProofs.length >= maxFetch || offset + limit < members.length;
+      const total = members.length; // This is partial count when limited
 
       // Resolve Bluesky profiles for this page, and include visible roles
       const enriched = await Promise.all(

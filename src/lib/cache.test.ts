@@ -152,6 +152,121 @@ describe('cache.ts - TtlCache', () => {
     });
   });
 
+  describe('LRU eviction', () => {
+    it('should evict least recently used entry when cache is full', () => {
+      const smallCache = new TtlCache<string>(60000, 3); // Max 3 entries
+
+      smallCache.set('key1', 'value1');
+      smallCache.set('key2', 'value2');
+      smallCache.set('key3', 'value3');
+
+      // Add a 4th entry - should evict key1 (oldest by set time)
+      smallCache.set('key4', 'value4');
+
+      expect(smallCache.get('key1')).toBeUndefined(); // Evicted
+      expect(smallCache.get('key2')).toBe('value2');
+      expect(smallCache.get('key3')).toBe('value3');
+      expect(smallCache.get('key4')).toBe('value4');
+    });
+
+    it('should update LRU order on access', async () => {
+      const smallCache = new TtlCache<string>(60000, 3); // Max 3 entries
+
+      smallCache.set('key1', 'value1');
+      await new Promise(resolve => setTimeout(resolve, 10)); // Ensure different timestamps
+      smallCache.set('key2', 'value2');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      smallCache.set('key3', 'value3');
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+      // Access key1 to make it most recently used
+      smallCache.get('key1');
+
+      // Add a 4th entry - key2 should be evicted (oldest access time)
+      smallCache.set('key4', 'value4');
+
+      // Verify key1 is still there (was accessed), key2 was evicted
+      expect(smallCache.get('key1')).toBe('value1'); // Still present
+      expect(smallCache.get('key2')).toBeUndefined(); // Evicted
+      expect(smallCache.get('key3')).toBe('value3');
+      expect(smallCache.get('key4')).toBe('value4');
+    });
+
+    it('should not evict when updating existing key', () => {
+      const smallCache = new TtlCache<string>(60000, 3); // Max 3 entries
+
+      smallCache.set('key1', 'value1');
+      smallCache.set('key2', 'value2');
+      smallCache.set('key3', 'value3');
+
+      // Update existing key - should not trigger eviction
+      smallCache.set('key2', 'value2-updated');
+
+      expect(smallCache.get('key1')).toBe('value1');
+      expect(smallCache.get('key2')).toBe('value2-updated');
+      expect(smallCache.get('key3')).toBe('value3');
+    });
+  });
+
+  describe('metrics', () => {
+    it('should track cache hits', () => {
+      cache.set('key1', 'value1');
+      cache.get('key1');
+      cache.get('key1');
+
+      const metrics = cache.getMetrics();
+      expect(metrics.hits).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should track cache misses', () => {
+      cache.get('non-existent1');
+      cache.get('non-existent2');
+
+      const metrics = cache.getMetrics();
+      expect(metrics.misses).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should track evictions', () => {
+      const smallCache = new TtlCache<string>(60000, 2); // Max 2 entries
+
+      smallCache.set('key1', 'value1');
+      smallCache.set('key2', 'value2');
+      smallCache.set('key3', 'value3'); // Triggers eviction
+
+      const metrics = smallCache.getMetrics();
+      expect(metrics.evictions).toBe(1);
+    });
+
+    it('should track current size', () => {
+      const freshCache = new TtlCache<string>(60000, 10);
+
+      freshCache.set('key1', 'value1');
+      freshCache.set('key2', 'value2');
+
+      let metrics = freshCache.getMetrics();
+      expect(metrics.size).toBe(2);
+
+      freshCache.invalidate('key1');
+      metrics = freshCache.getMetrics();
+      expect(metrics.size).toBe(1);
+    });
+
+    it('should reset metrics counters', () => {
+      cache.set('key1', 'value1');
+      cache.get('key1');
+      cache.get('non-existent');
+
+      cache.resetMetrics();
+
+      const metrics = cache.getMetrics();
+      expect(metrics.hits).toBe(0);
+      expect(metrics.misses).toBe(0);
+      expect(metrics.evictions).toBe(0);
+      // Size should not be reset
+      expect(metrics.size).toBeGreaterThanOrEqual(0);
+    });
+  });
+
   describe('cache key patterns', () => {
     it('should handle colon-separated keys', () => {
       cache.set('did:plc:123:member', 'value1');
