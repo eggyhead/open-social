@@ -19,6 +19,7 @@ import { config } from '../config';
 import { logger } from '../lib/logger';
 import { sanitizeUserContent } from '../lib/sanitize';
 import { searchRateLimiter } from '../middleware/rateLimit';
+import { logWarning } from '../lib/errors';
 
 export function createCommunityRouter(db: Kysely<Database>): Router {
   const router = Router();
@@ -240,7 +241,9 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
                 rkey: 'self',
               });
               type = (profileRes.data.value as any)?.type || 'open';
-            } catch {}
+            } catch (e) {
+              logWarning('Failed to fetch community profile', { error: e, communityDid: community.did });
+            }
 
             // Check admin status
             if (userDid) {
@@ -252,32 +255,51 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
                 });
                 const admins = (adminsRes.data.value as any)?.admins || [];
                 isAdmin = isAdminInList(userDid, admins);
-              } catch {}
+              } catch (e) {
+                logWarning('Failed to fetch community admins', { error: e, communityDid: community.did, userDid });
+              }
             }
 
-            // Get member count
-            try {
-              const membersRes = await agent.api.com.atproto.repo.listRecords({
-                repo: community.did,
-                collection: 'community.opensocial.membershipProof',
-                limit: 1,
-              });
-              // Use cursor-based counting: fetch all to count
-              let count = membersRes.data.records.length;
-              let memberCursor = membersRes.data.cursor;
-              while (memberCursor) {
-                const more = await agent.api.com.atproto.repo.listRecords({
+            // Get member count - use cached value if available and recent
+            if (community.member_count !== null && community.metadata_fetched_at) {
+              const cacheAge = Date.now() - community.metadata_fetched_at.getTime();
+              const cacheValid = cacheAge < 24 * 60 * 60 * 1000; // 24 hours
+              if (cacheValid) {
+                memberCount = community.member_count;
+              }
+            }
+
+            // If not cached or stale, fetch but limit to prevent OOM
+            if (memberCount === 0) {
+              try {
+                const membersRes = await agent.api.com.atproto.repo.listRecords({
                   repo: community.did,
                   collection: 'community.opensocial.membershipProof',
-                  cursor: memberCursor,
                   limit: 100,
                 });
-                count += more.data.records.length;
-                memberCursor = more.data.cursor;
-              }
-              memberCount = count;
-            } catch {}
-          } catch {}
+                // For performance, only count precisely up to 100, estimate beyond
+                let count = membersRes.data.records.length;
+                let memberCursor = membersRes.data.cursor;
+                let iterations = 0;
+                while (memberCursor && iterations < 9) { // Max 1000 members counted precisely
+                  const more = await agent.api.com.atproto.repo.listRecords({
+                    repo: community.did,
+                    collection: 'community.opensocial.membershipProof',
+                    cursor: memberCursor,
+                    limit: 100,
+                  });
+                  count += more.data.records.length;
+                  memberCursor = more.data.cursor;
+                  iterations++;
+                }
+                // If there are more, we stopped early - indicate 1000+
+                memberCount = memberCursor ? 1000 : count;
+              } catch (e) {
+              logWarning('Failed to count community members', { error: e, communityDid: community.did });
+            }
+          } catch (e) {
+            logWarning('Failed to create community agent for enrichment', { error: e, communityDid: community.did });
+          }
 
           // Update metadata cache (fire-and-forget)
           db.updateTable('communities')
@@ -355,7 +377,9 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
             rkey: 'self',
           });
           profile = profileRes.data.value as any;
-        } catch {}
+        } catch (e) {
+          logWarning('Failed to fetch community profile', { error: e, communityDid });
+        }
 
         try {
           const adminsRes = await agent.api.com.atproto.repo.getRecord({
@@ -367,7 +391,9 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
           if (userDid) {
             isAdmin = isAdminInList(userDid, admins);
           }
-        } catch {}
+        } catch (e) {
+          logWarning('Failed to fetch community admins', { error: e, communityDid, userDid });
+        }
 
         // Count members
         try {
@@ -384,8 +410,12 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
             memberCursor = membersRes.data.cursor;
           } while (memberCursor);
           memberCount = count;
-        } catch {}
-      } catch {}
+        } catch (e) {
+          logWarning('Failed to count community members', { error: e, communityDid });
+        }
+      } catch (e) {
+        logWarning('Failed to create community agent', { error: e, communityDid });
+      }
 
       res.json({
         community: {
@@ -508,7 +538,9 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
             if (isAdminInList(userDid, admins)) {
               userRoles.push('admin');
             }
-          } catch {}
+          } catch (e) {
+            logWarning('Failed to check admin status', { error: e, communityDid, userDid });
+          }
         } catch (e) {
           logger.warn({ error: e, communityDid, userDid }, 'Failed to resolve user roles from PDS');
         }
@@ -572,7 +604,8 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
         if (normalizeAdmins(admins).length > 1) {
           return res.status(400).json({ error: 'Community must have only one admin to be deleted. Remove other admins first.' });
         }
-      } catch {
+      } catch (e) {
+        logger.error({ error: e, communityDid }, 'Failed to verify admin status');
         return res.status(500).json({ error: 'Failed to verify admin status' });
       }
 

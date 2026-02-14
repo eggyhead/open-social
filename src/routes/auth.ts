@@ -272,15 +272,35 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(401).json({ error: 'Not authenticated' });
       }
 
-      const profile = await agent.getProfile({ actor: agent.assertDid });
-      
-      return res.json({
-        did: agent.assertDid,
-        handle: profile.data.handle,
-        displayName: profile.data.displayName,
-        avatar: profile.data.avatar,
-        description: profile.data.description,
-      });
+      // Try fetching the full profile from the AppView; fall back to
+      // minimal info from the DID document when no AppView is available
+      // (e.g. local devnet).
+      try {
+        const profile = await agent.getProfile({ actor: agent.assertDid });
+
+        return res.json({
+          did: agent.assertDid,
+          handle: profile.data.handle,
+          displayName: profile.data.displayName,
+          avatar: profile.data.avatar,
+          description: profile.data.description,
+        });
+      } catch (profileErr) {
+        logger.warn({ error: profileErr }, 'getProfile failed, returning minimal user info');
+
+        let handle: string | undefined;
+        try {
+          const sessionInfo = await agent.com.atproto.server.getSession();
+          handle = sessionInfo.data.handle;
+        } catch {
+          // ignore — handle stays undefined
+        }
+
+        return res.json({
+          did: agent.assertDid,
+          handle: handle || agent.assertDid,
+        });
+      }
     } catch (err) {
       logger.error({ error: err }, 'Failed to get user');
       return res.status(500).json({ error: 'Failed to get user' });
@@ -722,33 +742,51 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
 
       // Fetch community profile
-      const profileResponse = await communityAgent.api.com.atproto.repo.getRecord({
-        repo: communityDid,
-        collection: 'community.opensocial.profile',
-        rkey: 'self',
-      });
-
-      const profileValue = profileResponse.data.value as CommunityProfile;
+      let profileValue: CommunityProfile = {
+        displayName: community.display_name || community.handle,
+        description: '',
+        type: 'open',
+      } as CommunityProfile;
+      try {
+        const profileResponse = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: 'community.opensocial.profile',
+          rkey: 'self',
+        });
+        profileValue = profileResponse.data.value as CommunityProfile;
+      } catch {
+        // Profile record not yet created — use defaults
+      }
 
       const avatarUrl = blobToUrl(profileValue.avatar, communityDid, community.pds_host)
         || await fetchBlueskyAvatar(communityDid);
 
       // Count members (membership proofs)
-      const proofsResponse = await communityAgent.api.com.atproto.repo.listRecords({
-        repo: communityDid,
-        collection: 'community.opensocial.membershipProof',
-      });
-
-      const memberCount = proofsResponse.data.records.length;
+      let memberCount = 0;
+      let proofsRecords: any[] = [];
+      try {
+        const proofsResponse = await communityAgent.api.com.atproto.repo.listRecords({
+          repo: communityDid,
+          collection: 'community.opensocial.membershipProof',
+        });
+        proofsRecords = proofsResponse.data.records;
+        memberCount = proofsRecords.length;
+      } catch {
+        // No membership proofs yet
+      }
 
       // Check if user is admin
-      const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
-        repo: communityDid,
-        collection: 'community.opensocial.admins',
-        rkey: 'self',
-      });
-
-      const adminsValue = adminsResponse.data.value as { admins: string[] };
+      let adminsValue: { admins: string[] } = { admins: [] };
+      try {
+        const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: 'community.opensocial.admins',
+          rkey: 'self',
+        });
+        adminsValue = adminsResponse.data.value as { admins: string[] };
+      } catch {
+        // Admins record not yet created
+      }
 
       // If not authenticated, return public community info only
       if (!agent) {
@@ -786,7 +824,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       const userRole = userMembership ? (userMembership.value as MembershipRecord).role : undefined;
 
       // Check if user is a confirmed member (has membershipProof)
-      const isMember = isAdmin || proofsResponse.data.records.some(
+      const isMember = isAdmin || proofsRecords.some(
         (proof: any) => {
           // Check if this proof matches the user's membership CID
           if (!userMembership) return false;

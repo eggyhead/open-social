@@ -2,6 +2,8 @@ import { BskyAgent, AtpAgent } from '@atproto/api';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { decryptIfNeeded } from '../lib/crypto';
+import { retry, isTransientError } from '../lib/retry';
+import { logger } from '../lib/logger';
 
 /** Ensure a PDS host string is a full URL with scheme. */
 export function ensureServiceUrl(pdsHost: string): string {
@@ -23,11 +25,23 @@ export async function createCommunityAgent(db: Kysely<Database>, did: string): P
   }
 
   const agent = new BskyAgent({ service: ensureServiceUrl(community.pds_host) });
-  
-  await agent.login({
-    identifier: community.handle,
-    password: decryptIfNeeded(community.app_password),
-  });
+
+  await retry(
+    () => agent.login({
+      identifier: community.handle,
+      password: decryptIfNeeded(community.app_password),
+    }),
+    {
+      maxRetries: 3,
+      initialDelay: 1000,
+      shouldRetry: (error) => isTransientError(error),
+      context: {
+        did,
+        handle: community.handle,
+        pdsHost: community.pds_host,
+      },
+    }
+  );
 
   return agent;
 }

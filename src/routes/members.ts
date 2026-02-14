@@ -22,6 +22,7 @@ import { createWebhookService } from '../services/webhook';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 import { memberListRateLimiter, auditLogRateLimiter } from '../middleware/rateLimit';
+import { logWarning } from '../lib/errors';
 
 /**
  * Resolve a Bluesky profile to get handle, display name, and avatar.
@@ -222,7 +223,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
             },
           });
         }
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to remove admin from admin list when leaving', { error: e, communityDid, userDid });
+      }
 
       // Find and delete the membershipProof
       let memberCursor: string | undefined;
@@ -302,12 +305,16 @@ export function createMemberRouter(db: Kysely<Database>): Router {
           if (!isAdminInList(adminDid, admins)) {
             return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
           }
-        } catch {
+        } catch (e) {
+          logger.error({ error: e, communityDid, adminDid }, 'Failed to verify admin status');
           return res.status(500).json({ error: 'Failed to verify admin status' });
         }
       }
 
-      // Fetch all membershipProof records
+      // Fetch membershipProof records with reasonable limit
+      // Don't load all members into memory - fetch enough to satisfy pagination + buffer
+      const offset = cursor ? decodeCursor(cursor) : 0;
+      const maxFetch = Math.min(offset + limit * 3, 1000); // Cap at 1000 members
       let atCursor: string | undefined;
       const allProofs: any[] = [];
       do {
@@ -319,6 +326,10 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         });
         allProofs.push(...response.data.records);
         atCursor = response.data.cursor;
+        // Stop if we have enough records or hit our safety limit
+        if (allProofs.length >= maxFetch) {
+          break;
+        }
       } while (atCursor);
 
       // Get admins list
@@ -330,7 +341,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
           rkey: 'self',
         });
         admins = (adminsRes.data.value as any)?.admins || [];
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to fetch admins list', { error: e, communityDid });
+      }
 
       // Build member list
       let members = allProofs.map((record: any) => ({
@@ -349,12 +362,11 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         );
       }
 
-      const total = members.length;
-
-      // Apply pagination
-      const offset = cursor ? decodeCursor(cursor) : 0;
+      // Apply pagination (offset already calculated above)
       const page = members.slice(offset, offset + limit);
-      const hasMore = offset + limit < total;
+      // We might not have fetched all members, so indicate there may be more
+      const hasMore = allProofs.length >= maxFetch || offset + limit < members.length;
+      const total = members.length; // This is partial count when limited
 
       // Resolve Bluesky profiles for this page, and include visible roles
       const enriched = await Promise.all(
@@ -1013,7 +1025,9 @@ export function createMemberRouter(db: Kysely<Database>): Router {
         });
         const admins = (adminsRes.data.value as any)?.admins || [];
         isAdmin = isAdminInList(userDid, admins);
-      } catch {}
+      } catch (e) {
+        logWarning('Failed to check admin status', { error: e, communityDid, userDid });
+      }
 
       // Check pending status
       let isPending = false;

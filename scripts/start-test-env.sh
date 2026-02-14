@@ -31,6 +31,11 @@ while ! jq -e 'length > 0' "$DEVNET_DIR/data/accounts.json" >/dev/null 2>&1; do
   ELAPSED=$((ELAPSED + 2))
 done
 echo "==> Devnet accounts seeded."
+
+# Seed the community account into the open-social database
+echo "==> Seeding community into open-social database..."
+npm run seed:devnet
+
 echo ""
 echo "Devnet is ready. Run the app or tests with:"
 echo ""
