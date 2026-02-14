@@ -47,9 +47,12 @@ describe('retry.ts', () => {
 
       const promise = retry(fn, { maxRetries: 2 });
 
+      // Handle promise and timers together to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
+      const error = await resultPromise;
 
-      await expect(promise).rejects.toThrow('Always fails');
+      expect(error.message).toBe('Always fails');
       expect(fn).toHaveBeenCalledTimes(3); // Initial + 2 retries
     });
 
@@ -70,9 +73,10 @@ describe('retry.ts', () => {
         backoffMultiplier: 2,
       });
 
+      // Handle promise to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
-
-      await expect(promise).rejects.toThrow();
+      await resultPromise;
 
       // Should have delays: 100ms, 200ms, 400ms
       expect(delays).toEqual([100, 200, 400]);
@@ -95,9 +99,10 @@ describe('retry.ts', () => {
         maxDelay: 500,
       });
 
+      // Handle promise to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
-
-      await expect(promise).rejects.toThrow();
+      await resultPromise;
 
       // Should cap at maxDelay
       expect(delays).toEqual([100, 500, 500]);
@@ -111,9 +116,12 @@ describe('retry.ts', () => {
         shouldRetry: () => false,
       });
 
+      // Handle promise to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
+      const error = await resultPromise;
 
-      await expect(promise).rejects.toThrow('Non-retryable error');
+      expect(error.message).toBe('Non-retryable error');
       expect(fn).toHaveBeenCalledTimes(1); // No retries
     });
 
@@ -126,9 +134,10 @@ describe('retry.ts', () => {
         shouldRetry,
       });
 
+      // Handle promise to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
-
-      await expect(promise).rejects.toThrow();
+      await resultPromise;
 
       // Should be called with attempt 1 (first retry after initial failure)
       expect(shouldRetry).toHaveBeenCalledWith(expect.any(Error), 1);
@@ -142,9 +151,10 @@ describe('retry.ts', () => {
         context: { operation: 'test', id: 123 },
       });
 
+      // Handle promise to avoid unhandled rejections
+      const resultPromise = promise.catch(err => err);
       await vi.runAllTimersAsync();
-
-      await expect(promise).rejects.toThrow();
+      await resultPromise;
 
       // Logger is called with context, but we're not checking the exact log output
       expect(fn).toHaveBeenCalledTimes(2);
