@@ -293,7 +293,8 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
                 // If there are more, we stopped early - indicate 1000+
                 memberCount = memberCursor ? 1000 : count;
               } catch (e) {
-              logWarning('Failed to count community members', { error: e, communityDid: community.did });
+                logWarning('Failed to count community members', { error: e, communityDid: community.did });
+              }
             }
           } catch (e) {
             logWarning('Failed to create community agent for enrichment', { error: e, communityDid: community.did });
