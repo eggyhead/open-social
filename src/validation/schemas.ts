@@ -1,10 +1,17 @@
 import { z } from 'zod';
+import { validateNSID } from '../lib/sanitize';
 
 // Common schemas
 export const didSchema = z.string().min(1, 'DID is required').startsWith('did:');
 export const handleSchema = z.string().min(1, 'Handle is required');
 export const cursorSchema = z.string().optional();
 export const limitSchema = z.coerce.number().int().min(1).max(100).default(20);
+
+// Collection/NSID schema - validates ATProto NSID format
+export const nsidSchema = z.string().min(1, 'Collection is required').refine(
+  (val) => validateNSID(val),
+  { message: 'Collection must be a valid ATProto NSID (e.g., com.example.collectionName)' }
+);
 
 // App schemas
 export const registerAppSchema = z.object({
@@ -104,14 +111,14 @@ export const deleteCommunitySchema = z.object({
 
 // Record schemas
 export const createRecordSchema = z.object({
-  collection: z.string().min(1, 'Collection is required'),
+  collection: nsidSchema,
   record: z.record(z.string(), z.any()).refine(r => r['$type'], { message: 'Record must include $type' }),
   userDid: didSchema,
   rkey: z.string().optional(),
 });
 
 export const updateRecordSchema = z.object({
-  collection: z.string().min(1),
+  collection: nsidSchema,
   rkey: z.string().min(1, 'Record key is required'),
   record: z.record(z.string(), z.any()).refine(r => r['$type'], { message: 'Record must include $type' }),
   userDid: didSchema,
@@ -193,7 +200,7 @@ export const collectionPermissionLevelSchema = z.enum(['admin', 'member']).or(z.
 
 export const setCollectionPermissionSchema = z.object({
   adminDid: didSchema,
-  collection: z.string().min(1, 'Collection is required'),
+  collection: nsidSchema,
   canCreate: collectionPermissionLevelSchema.optional(),
   canRead: collectionPermissionLevelSchema.optional(),
   canUpdate: collectionPermissionLevelSchema.optional(),
@@ -202,12 +209,12 @@ export const setCollectionPermissionSchema = z.object({
 
 export const deleteCollectionPermissionSchema = z.object({
   adminDid: didSchema,
-  collection: z.string().min(1, 'Collection is required'),
+  collection: nsidSchema,
 });
 
 // App default permissions (used during registration)
 export const appDefaultPermissionSchema = z.object({
-  collection: z.string().min(1),
+  collection: nsidSchema,
   defaultCanCreate: collectionPermissionLevelSchema.default('member'),
   defaultCanRead: collectionPermissionLevelSchema.default('member'),
   defaultCanUpdate: collectionPermissionLevelSchema.default('member'),

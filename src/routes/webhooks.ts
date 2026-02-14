@@ -6,6 +6,8 @@ import { createVerifyApiKey, type AuthenticatedRequest } from '../middleware/aut
 import { createWebhookSchema, updateWebhookSchema } from '../validation/schemas';
 import { parsePagination, encodeCursor, decodeCursor } from '../lib/pagination';
 import { logger } from '../lib/logger';
+import { validateWebhookUrl } from '../lib/sanitize';
+import { config } from '../config';
 
 export function createWebhookRouter(db: Kysely<Database>): Router {
   const router = Router();
@@ -20,6 +22,14 @@ export function createWebhookRouter(db: Kysely<Database>): Router {
       }
 
       const { url, events, communityDid } = parsed.data;
+
+      // Validate webhook URL with enhanced security checks
+      try {
+        validateWebhookUrl(url, config.webhookAllowedHostnames);
+      } catch (error: any) {
+        return res.status(400).json({ error: error.message });
+      }
+
       const secret = crypto.randomBytes(32).toString('hex');
 
       const result = await db
@@ -105,6 +115,15 @@ export function createWebhookRouter(db: Kysely<Database>): Router {
 
       if (!webhook) {
         return res.status(404).json({ error: 'Webhook not found' });
+      }
+
+      // Validate webhook URL if being updated
+      if (parsed.data.url) {
+        try {
+          validateWebhookUrl(parsed.data.url, config.webhookAllowedHostnames);
+        } catch (error: any) {
+          return res.status(400).json({ error: error.message });
+        }
       }
 
       const updates: Record<string, any> = { updated_at: new Date() };

@@ -21,6 +21,7 @@ import { createAuditLogService } from '../services/auditLog';
 import { createWebhookService } from '../services/webhook';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import { memberListRateLimiter, auditLogRateLimiter } from '../middleware/rateLimit';
 import { logWarning } from '../lib/errors';
 
 /**
@@ -269,7 +270,7 @@ export function createMemberRouter(db: Kysely<Database>): Router {
   });
 
   // ─── LIST MEMBERS (paginated, with profiles) ──────────────────────
-  router.get('/:did/members', verifyApiKey, async (req: AuthenticatedRequest, res) => {
+  router.get('/:did/members', verifyApiKey, memberListRateLimiter, async (req: AuthenticatedRequest, res) => {
     const communityDid = decodeURIComponent(req.params.did);
     try {
       const parsed = listMembersSchema.safeParse(req.query);
@@ -408,7 +409,7 @@ export function createMemberRouter(db: Kysely<Database>): Router {
   });
 
   // ─── LIST PENDING MEMBERS (admin only) ─────────────────────────────
-  router.get('/:did/members/pending', verifyApiKey, async (req: AuthenticatedRequest, res) => {
+  router.get('/:did/members/pending', verifyApiKey, memberListRateLimiter, async (req: AuthenticatedRequest, res) => {
     const communityDid = decodeURIComponent(req.params.did);
     try {
       const adminDid = req.query.adminDid as string;
@@ -1051,7 +1052,7 @@ export function createMemberRouter(db: Kysely<Database>): Router {
   });
 
   // ─── AUDIT LOG ─────────────────────────────────────────────────────
-  router.get('/:did/audit-log', verifyApiKey, async (req: AuthenticatedRequest, res) => {
+  router.get('/:did/audit-log', verifyApiKey, auditLogRateLimiter, async (req: AuthenticatedRequest, res) => {
     const communityDid = decodeURIComponent(req.params.did);
     try {
       const parsed = auditLogQuerySchema.safeParse(req.query);

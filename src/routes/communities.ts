@@ -17,6 +17,8 @@ import { createCommunityAgent } from '../services/atproto';
 import { checkAppVisibility } from '../services/permissions';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import { sanitizeUserContent } from '../lib/sanitize';
+import { searchRateLimiter } from '../middleware/rateLimit';
 import { logWarning } from '../lib/errors';
 
 export function createCommunityRouter(db: Kysely<Database>): Router {
@@ -110,7 +112,7 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
           record: {
             $type: 'community.opensocial.profile',
             displayName,
-            description: description || '',
+            description: description ? sanitizeUserContent(description) : '',
             createdAt: new Date().toISOString(),
             type: 'open',
             ...(avatarBlob ? { avatar: avatarBlob } : {}),
@@ -167,7 +169,7 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
   });
 
   // List / search communities
-  router.get('/', verifyApiKey, async (req: AuthenticatedRequest, res) => {
+  router.get('/', verifyApiKey, searchRateLimiter, async (req: AuthenticatedRequest, res) => {
     try {
       const parsed = searchCommunitiesSchema.safeParse(req.query);
       if (!parsed.success) {

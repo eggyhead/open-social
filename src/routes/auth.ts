@@ -16,6 +16,7 @@ import { checkAdmin, seedCollectionPermissions } from '../services/permissions';
 import { createAuditLogService } from '../services/auditLog';
 import { memberRolesCache } from '../lib/cache';
 import { logger } from '../lib/logger';
+import { sanitizeUserContent } from '../lib/sanitize';
 
 // Configure multer for file uploads
 const upload = multer({
@@ -1236,6 +1237,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
 
       const currentProfile = profileResponse.data.value as CommunityProfile;
 
+      // Sanitize user input to prevent XSS
+      const sanitizedDescription = description ? sanitizeUserContent(description.trim()) : '';
+
       // Update profile with new values
       await communityAgent.api.com.atproto.repo.putRecord({
         repo: communityDid,
@@ -1245,7 +1249,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           ...currentProfile,
           $type: 'community.opensocial.profile',
           displayName: displayName.trim(),
-          description: description ? description.trim() : '',
+          description: sanitizedDescription,
           type: type || currentProfile.type || 'open',
         },
       });
