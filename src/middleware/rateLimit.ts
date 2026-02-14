@@ -63,3 +63,70 @@ export const authRateLimiter = rateLimit({
     });
   },
 });
+
+// Rate limiter for expensive search operations
+export const searchRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // 30 searches per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const authReq = req as AuthenticatedRequest;
+    if (authReq.app_data?.app_id) {
+      return `search:${authReq.app_data.app_id}`;
+    }
+    return `search:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+  handler: (req: Request, res: Response) => {
+    res.status(429).json({
+      error: 'Too many search requests',
+      message: 'Search rate limit exceeded. Please try again later.',
+      retryAfter: 60,
+    });
+  },
+});
+
+// Rate limiter for member listing operations
+export const memberListRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 member list requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const authReq = req as AuthenticatedRequest;
+    if (authReq.app_data?.app_id) {
+      return `members:${authReq.app_data.app_id}`;
+    }
+    return `members:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+  handler: (req: Request, res: Response) => {
+    res.status(429).json({
+      error: 'Too many member listing requests',
+      message: 'Member listing rate limit exceeded. Please try again later.',
+      retryAfter: 60,
+    });
+  },
+});
+
+// Rate limiter for audit log queries (admin operation, more restrictive)
+export const auditLogRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 audit log queries per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const authReq = req as AuthenticatedRequest;
+    if (authReq.app_data?.app_id) {
+      return `audit:${authReq.app_data.app_id}`;
+    }
+    return `audit:${ipKeyGenerator(req.ip ?? 'unknown')}`;
+  },
+  handler: (req: Request, res: Response) => {
+    res.status(429).json({
+      error: 'Too many audit log requests',
+      message: 'Audit log rate limit exceeded. Please try again later.',
+      retryAfter: 60,
+    });
+  },
+});
+
