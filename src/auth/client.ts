@@ -61,5 +61,7 @@ export async function createOAuthClient(db: Kysely<Database>) {
     sessionStore: new SessionStore(db),
     plcDirectoryUrl: config.plcUrl,
     handleResolver: config.pdsUrl,
+    // Allow http:// URLs when running locally against devnet
+    allowHttp: config.nodeEnv === 'development',
   });
 }
