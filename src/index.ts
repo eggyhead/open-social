@@ -105,7 +105,7 @@ async function start() {
       }, 'OpenSocial API server started');
     });
   } catch (error) {
-    logger.error({ error }, 'Failed to start server');
+    logger.error({ err: error, message: error instanceof Error ? error.message : String(error) }, 'Failed to start server');
     process.exit(1);
   }
 }
