@@ -115,6 +115,8 @@ const sessionOptions = {
     sameSite: 'lax' as const,
     httpOnly: true,
     path: '/',
+    // Share cookie across subdomains (api.opensocial.community ↔ app.opensocial.community)
+    domain: config.nodeEnv === 'production' ? '.opensocial.community' : undefined,
   },
 };
 
@@ -213,7 +215,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
 
     // Redirect back to the frontend
     const redirectUrl = config.nodeEnv === 'production'
-      ? config.serviceUrl || 'http://127.0.0.1:5174'
+      ? config.corsOrigin || config.serviceUrl || 'http://127.0.0.1:5174'
       : 'http://127.0.0.1:5174';
     return res.redirect(redirectUrl);
   });
