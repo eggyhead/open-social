@@ -35,7 +35,7 @@ const PORT = config.port;
 // Middleware
 app.use(cors({
   origin: config.nodeEnv === 'production' 
-    ? [config.serviceUrl || ''] 
+    ? [config.corsOrigin || config.serviceUrl || ''] 
     : ['http://127.0.0.1:5174', 'http://localhost:5174'],
   credentials: true,
 }));

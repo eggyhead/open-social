@@ -15,6 +15,7 @@ export const config = {
   pdsUrl: process.env.PDS_URL || 'https://bsky.social',
   cookieSecret: process.env.COOKIE_SECRET || '',
   encryptionKey: process.env.ENCRYPTION_KEY || '',
+  corsOrigin: process.env.CORS_ORIGIN || undefined, // e.g. https://app.opensocial.community
   webhookAllowedHostnames: process.env.WEBHOOK_ALLOWED_HOSTNAMES
     ? process.env.WEBHOOK_ALLOWED_HOSTNAMES.split(',').map(h => h.trim())
     : undefined, // undefined = no allowlist, allow all hostnames
