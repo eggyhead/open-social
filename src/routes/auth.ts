@@ -210,7 +210,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
 
       await session.save();
     } catch (err) {
-      logger.error({ error: err }, 'OAuth callback failed');
+      const message = err instanceof Error ? err.message : 'unexpected error';
+      const stack = err instanceof Error ? err.stack : undefined;
+      logger.error({ error: message, stack, name: err instanceof Error ? err.name : undefined }, 'OAuth callback failed');
     }
 
     // Redirect back to the frontend
@@ -238,9 +240,10 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
 
       res.redirect(url.toString());
     } catch (err) {
-      logger.error({ error: err }, 'OAuth authorize failed');
-      const error = err instanceof Error ? err.message : 'unexpected error';
-      return res.type('json').send({ error });
+      const message = err instanceof Error ? err.message : 'unexpected error';
+      const stack = err instanceof Error ? err.stack : undefined;
+      logger.error({ error: message, stack, name: err instanceof Error ? err.name : undefined }, 'OAuth authorize failed');
+      return res.type('json').send({ error: message });
     }
   });
 
