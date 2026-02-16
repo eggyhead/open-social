@@ -132,11 +132,10 @@ export function isTransientError(error: any): boolean {
 
   // HTTP errors that are typically transient
   if (error.status) {
-    // 429 Too Many Requests
     // 502 Bad Gateway
     // 503 Service Unavailable
     // 504 Gateway Timeout
-    return [429, 502, 503, 504].includes(error.status);
+    return [502, 503, 504].includes(error.status);
   }
 
   return false;

@@ -8,7 +8,7 @@ import multer from 'multer';
 import { config } from '../config';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../db';
-import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint } from '../services/atproto';
+import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, invalidateCommunityAgent } from '../services/atproto';
 import { isAdminInList, getOriginalAdminDid, normalizeAdmins } from '../lib/adminUtils';
 import { encrypt, decryptIfNeeded } from '../lib/crypto';
 import { hasScope, MEMBERSHIP_WRITE_SCOPE, OPENSOCIAL_SCOPES } from '../middleware/auth';
@@ -1362,6 +1362,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         })
         .where('did', '=', communityDid)
         .execute();
+
+      // Evict the old cached agent so the next request uses the new password
+      invalidateCommunityAgent(communityDid);
 
       logger.info({ communityDid, updatedBy: agent.assertDid }, 'Community app password updated');
 

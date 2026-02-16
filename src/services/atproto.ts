@@ -6,6 +6,41 @@ import { retry, isTransientError } from '../lib/retry';
 import { logger } from '../lib/logger';
 import { config } from '../config';
 
+/**
+ * In-memory cache for authenticated community agents.
+ *
+ * The Bluesky PDS enforces a rate limit of ~30 createSession calls per
+ * 5-minute window.  Without caching, every inbound API request calls
+ * `login()`, so a single page load (which fires 5-10 parallel requests)
+ * quickly exhausts the budget and causes cascading 429 errors.
+ *
+ * Cached agents are reused for 4 minutes (well within the JWT lifetime)
+ * and automatically evicted when they expire.
+ */
+interface CachedAgent {
+  agent: BskyAgent;
+  expiresAt: number;
+}
+
+const agentCache = new Map<string, CachedAgent>();
+const AGENT_CACHE_TTL_MS = 4 * 60 * 1000; // 4 minutes
+
+/**
+ * Pending login promises so concurrent requests for the same community
+ * share a single login() call instead of each triggering their own.
+ */
+const pendingLogins = new Map<string, Promise<BskyAgent>>();
+
+/** Periodically prune expired entries so the map doesn't grow forever. */
+setInterval(() => {
+  const now = Date.now();
+  for (const [did, entry] of agentCache) {
+    if (now >= entry.expiresAt) {
+      agentCache.delete(did);
+    }
+  }
+}, 60_000);
+
 /** Ensure a PDS host string is a full URL with scheme. */
 export function ensureServiceUrl(pdsHost: string): string {
   if (pdsHost.startsWith('http://') || pdsHost.startsWith('https://')) {
@@ -35,40 +70,78 @@ export async function resolvePdsEndpoint(did: string, fallback?: string): Promis
 }
 
 export async function createCommunityAgent(db: Kysely<Database>, did: string): Promise<BskyAgent> {
-  const community = await db
-    .selectFrom('communities')
-    .select(['handle', 'pds_host', 'app_password'])
-    .where('did', '=', did)
-    .executeTakeFirst();
-
-  if (!community) {
-    throw new Error('Community not found');
+  // 1. Return a cached agent if it's still valid
+  const cached = agentCache.get(did);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.agent;
   }
 
-  // Resolve the actual PDS endpoint from the DID document,
-  // falling back to the stored pds_host if resolution fails.
-  const pdsUrl = await resolvePdsEndpoint(did, community.pds_host);
+  // 2. If another caller is already logging in for this DID, await that
+  //    instead of firing a second createSession call.
+  const pending = pendingLogins.get(did);
+  if (pending) {
+    return pending;
+  }
 
-  const agent = new BskyAgent({ service: pdsUrl });
+  // 3. Perform the actual login, sharing the promise with concurrent callers
+  const loginPromise = (async (): Promise<BskyAgent> => {
+    const community = await db
+      .selectFrom('communities')
+      .select(['handle', 'pds_host', 'app_password'])
+      .where('did', '=', did)
+      .executeTakeFirst();
 
-  await retry(
-    () => agent.login({
-      identifier: did,
-      password: decryptIfNeeded(community.app_password),
-    }),
-    {
-      maxRetries: 3,
-      initialDelay: 1000,
-      shouldRetry: (error) => isTransientError(error),
-      context: {
-        did,
-        handle: community.handle,
-        pdsHost: pdsUrl,
-      },
+    if (!community) {
+      throw new Error('Community not found');
     }
-  );
 
-  return agent;
+    // Resolve the actual PDS endpoint from the DID document,
+    // falling back to the stored pds_host if resolution fails.
+    const pdsUrl = await resolvePdsEndpoint(did, community.pds_host);
+
+    const agent = new BskyAgent({ service: pdsUrl });
+
+    await retry(
+      () => agent.login({
+        identifier: did,
+        password: decryptIfNeeded(community.app_password),
+      }),
+      {
+        maxRetries: 2,
+        initialDelay: 1000,
+        shouldRetry: (error) => {
+          return isTransientError(error);
+        },
+        context: {
+          did,
+          handle: community.handle,
+          pdsHost: pdsUrl,
+        },
+      }
+    );
+
+    // Cache the authenticated agent
+    agentCache.set(did, { agent, expiresAt: Date.now() + AGENT_CACHE_TTL_MS });
+    logger.info({ did }, 'Community agent cached');
+
+    return agent;
+  })();
+
+  pendingLogins.set(did, loginPromise);
+
+  try {
+    return await loginPromise;
+  } finally {
+    pendingLogins.delete(did);
+  }
+}
+
+/**
+ * Evict a cached community agent (e.g. after an app-password update).
+ */
+export function invalidateCommunityAgent(did: string): void {
+  agentCache.delete(did);
+  pendingLogins.delete(did);
 }
 
 export async function getPublicAgent(pdsHost: string): Promise<AtpAgent> {
