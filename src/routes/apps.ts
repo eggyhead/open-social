@@ -110,11 +110,11 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
 
       return res.json({
         app: {
-          appId,
+          app_id: appId,
           name,
           domain,
-          apiKey,
-          createdAt: new Date().toISOString(),
+          api_key: apiKey,
+          created_at: new Date().toISOString(),
         },
         message: 'Store the api_key securely — treat it like a password.',
       });
@@ -285,7 +285,7 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
         .execute();
 
       return res.json({
-        apiKey: newApiKey,
+        api_key: newApiKey,
         message: 'Store the new api_key securely. The old key is now invalid.',
       });
     } catch (err) {
