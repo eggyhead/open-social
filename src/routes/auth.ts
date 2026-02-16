@@ -761,32 +761,37 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         }
       }
 
-      // Fetch community profile — use authenticated agent if available, else public API
+      // When community agent is unavailable (credential error), use the actual PDS
+      // for reading public records. The Bluesky AppView (public.api.bsky.app) only
+      // supports Bluesky collections, not custom ones like community.opensocial.*.
+      let publicRecordAgent: BskyAgent | null = null;
+      if (!communityAgent) {
+        try {
+          const pdsUrl = await resolvePdsEndpoint(communityDid, community.pds_host);
+          publicRecordAgent = new BskyAgent({ service: pdsUrl });
+        } catch (err) {
+          logger.warn({ error: err, communityDid }, 'Failed to create public record agent');
+        }
+      }
+      const recordAgent = communityAgent || publicRecordAgent;
+
+      // Fetch community profile
       let profileValue: CommunityProfile = {
         displayName: community.display_name || community.handle,
         description: '',
         type: 'open',
       } as CommunityProfile;
-      try {
-        if (communityAgent) {
-          const profileResponse = await communityAgent.api.com.atproto.repo.getRecord({
+      if (recordAgent) {
+        try {
+          const profileResponse = await recordAgent.api.com.atproto.repo.getRecord({
             repo: communityDid,
             collection: 'community.opensocial.profile',
             rkey: 'self',
           });
           profileValue = profileResponse.data.value as CommunityProfile;
-        } else {
-          // Fall back to public API for reading records
-          const publicAgent = new BskyAgent({ service: 'https://public.api.bsky.app' });
-          const profileResponse = await publicAgent.api.com.atproto.repo.getRecord({
-            repo: communityDid,
-            collection: 'community.opensocial.profile',
-            rkey: 'self',
-          });
-          profileValue = profileResponse.data.value as CommunityProfile;
+        } catch {
+          // Profile record not yet created — use defaults
         }
-      } catch {
-        // Profile record not yet created — use defaults
       }
 
       const avatarUrl = blobToUrl(profileValue.avatar, communityDid, community.pds_host)
@@ -795,30 +800,32 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       // Count members (membership proofs)
       let memberCount = 0;
       let proofsRecords: any[] = [];
-      try {
-        const recordAgent = communityAgent || new BskyAgent({ service: 'https://public.api.bsky.app' });
-        const proofsResponse = await recordAgent.api.com.atproto.repo.listRecords({
-          repo: communityDid,
-          collection: 'community.opensocial.membershipProof',
-        });
-        proofsRecords = proofsResponse.data.records;
-        memberCount = proofsRecords.length;
-      } catch {
-        // No membership proofs yet
+      if (recordAgent) {
+        try {
+          const proofsResponse = await recordAgent.api.com.atproto.repo.listRecords({
+            repo: communityDid,
+            collection: 'community.opensocial.membershipProof',
+          });
+          proofsRecords = proofsResponse.data.records;
+          memberCount = proofsRecords.length;
+        } catch {
+          // No membership proofs yet
+        }
       }
 
-      // Check if user is admin (can be read from public records)
+      // Check if user is admin (readable from public PDS records without auth)
       let adminsValue: { admins: string[] } = { admins: [] };
-      try {
-        const recordAgent = communityAgent || new BskyAgent({ service: 'https://public.api.bsky.app' });
-        const adminsResponse = await recordAgent.api.com.atproto.repo.getRecord({
-          repo: communityDid,
-          collection: 'community.opensocial.admins',
-          rkey: 'self',
-        });
-        adminsValue = adminsResponse.data.value as { admins: string[] };
-      } catch {
-        // Admins record not yet created
+      if (recordAgent) {
+        try {
+          const adminsResponse = await recordAgent.api.com.atproto.repo.getRecord({
+            repo: communityDid,
+            collection: 'community.opensocial.admins',
+            rkey: 'self',
+          });
+          adminsValue = adminsResponse.data.value as { admins: string[] };
+        } catch {
+          // Admins record not yet created
+        }
       }
 
       // If not authenticated, return public community info only
@@ -1311,10 +1318,13 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(404).json({ error: 'Community not found' });
       }
 
-      // Verify the caller is an admin via public API (since the community agent may not work)
+      // Verify the caller is an admin via public PDS API (since the community agent may not work).
+      // We use the actual PDS, not the Bluesky AppView, because custom collections
+      // like community.opensocial.admins are only served by the PDS.
       try {
-        const publicAgent = new BskyAgent({ service: 'https://public.api.bsky.app' });
-        const adminsResponse = await publicAgent.api.com.atproto.repo.getRecord({
+        const pdsUrl = await resolvePdsEndpoint(communityDid, community.pds_host);
+        const pdsAgent = new BskyAgent({ service: pdsUrl });
+        const adminsResponse = await pdsAgent.api.com.atproto.repo.getRecord({
           repo: communityDid,
           collection: 'community.opensocial.admins',
           rkey: 'self',
