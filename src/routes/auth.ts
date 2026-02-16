@@ -740,22 +740,51 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(404).json({ error: 'Community not found' });
       }
 
-      // Create community agent
-      const communityAgent = await createCommunityAgent(db, communityDid);
+      // Try to create community agent — may fail if app password is revoked
+      let communityAgent: BskyAgent | null = null;
+      let credentialError = false;
+      try {
+        communityAgent = await createCommunityAgent(db, communityDid);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        // Detect auth failures (401, "Invalid identifier or password", etc.)
+        if (
+          message.includes('Invalid identifier or password') ||
+          message.includes('AuthenticationRequired') ||
+          message.includes('Authentication Required')
+        ) {
+          credentialError = true;
+          logger.warn({ communityDid }, 'Community has invalid credentials — app password may need updating');
+        } else {
+          // Re-throw non-credential errors
+          throw err;
+        }
+      }
 
-      // Fetch community profile
+      // Fetch community profile — use authenticated agent if available, else public API
       let profileValue: CommunityProfile = {
         displayName: community.display_name || community.handle,
         description: '',
         type: 'open',
       } as CommunityProfile;
       try {
-        const profileResponse = await communityAgent.api.com.atproto.repo.getRecord({
-          repo: communityDid,
-          collection: 'community.opensocial.profile',
-          rkey: 'self',
-        });
-        profileValue = profileResponse.data.value as CommunityProfile;
+        if (communityAgent) {
+          const profileResponse = await communityAgent.api.com.atproto.repo.getRecord({
+            repo: communityDid,
+            collection: 'community.opensocial.profile',
+            rkey: 'self',
+          });
+          profileValue = profileResponse.data.value as CommunityProfile;
+        } else {
+          // Fall back to public API for reading records
+          const publicAgent = new BskyAgent({ service: 'https://public.api.bsky.app' });
+          const profileResponse = await publicAgent.api.com.atproto.repo.getRecord({
+            repo: communityDid,
+            collection: 'community.opensocial.profile',
+            rkey: 'self',
+          });
+          profileValue = profileResponse.data.value as CommunityProfile;
+        }
       } catch {
         // Profile record not yet created — use defaults
       }
@@ -767,7 +796,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       let memberCount = 0;
       let proofsRecords: any[] = [];
       try {
-        const proofsResponse = await communityAgent.api.com.atproto.repo.listRecords({
+        const recordAgent = communityAgent || new BskyAgent({ service: 'https://public.api.bsky.app' });
+        const proofsResponse = await recordAgent.api.com.atproto.repo.listRecords({
           repo: communityDid,
           collection: 'community.opensocial.membershipProof',
         });
@@ -777,10 +807,11 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         // No membership proofs yet
       }
 
-      // Check if user is admin
+      // Check if user is admin (can be read from public records)
       let adminsValue: { admins: string[] } = { admins: [] };
       try {
-        const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
+        const recordAgent = communityAgent || new BskyAgent({ service: 'https://public.api.bsky.app' });
+        const adminsResponse = await recordAgent.api.com.atproto.repo.getRecord({
           repo: communityDid,
           collection: 'community.opensocial.admins',
           rkey: 'self',
@@ -806,6 +837,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           isPrimaryAdmin: false,
           isAuthenticated: false,
           userRole: undefined,
+          // Only expose credential error to non-authenticated users so they see the page
+          credentialError: credentialError || undefined,
         });
       }
 
@@ -848,6 +881,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         isPrimaryAdmin: agent.assertDid === primaryAdminDid,
         isAuthenticated: true,
         userRole,
+        // Only expose credential error flag to admins
+        credentialError: isAdmin ? credentialError : undefined,
       });
     } catch (err) {
       logger.error({ error: err, communityDid: req.params.did }, 'Failed to get community details');
@@ -1246,6 +1281,86 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       return res.status(500).json({ 
         error: 'Failed to update community profile',
         details: err instanceof Error ? err.message : 'Unknown error'
+      });
+    }
+  });
+
+  // Update community app password (for when the old one is revoked)
+  router.put('/communities/:did/app-password', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+
+      const communityDid = decodeURIComponent(req.params.did);
+      const { appPassword } = req.body;
+
+      if (!appPassword || typeof appPassword !== 'string' || !appPassword.trim()) {
+        return res.status(400).json({ error: 'appPassword is required' });
+      }
+
+      // Check community exists
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      // Verify the caller is an admin via public API (since the community agent may not work)
+      try {
+        const publicAgent = new BskyAgent({ service: 'https://public.api.bsky.app' });
+        const adminsResponse = await publicAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: 'community.opensocial.admins',
+          rkey: 'self',
+        });
+        const adminsValue = adminsResponse.data.value as { admins: string[] };
+        if (!adminsValue.admins.includes(agent.assertDid)) {
+          return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
+        }
+      } catch (err) {
+        logger.error({ error: err, communityDid }, 'Failed to verify admin status');
+        return res.status(403).json({ error: 'Could not verify admin status' });
+      }
+
+      // Verify the new app password works by attempting login
+      const pdsUrl = await resolvePdsEndpoint(communityDid, community.pds_host);
+      const testAgent = new BskyAgent({ service: pdsUrl });
+      try {
+        await testAgent.login({
+          identifier: communityDid,
+          password: appPassword.trim(),
+        });
+      } catch (err) {
+        logger.warn({ error: err, communityDid }, 'New app password verification failed');
+        return res.status(400).json({
+          error: 'Invalid app password. Please make sure you created a new app password in Bluesky settings and copied it correctly.',
+        });
+      }
+
+      // Password verified — update the database
+      await db
+        .updateTable('communities')
+        .set({
+          app_password: encrypt(appPassword.trim()),
+          pds_host: pdsUrl, // Also update PDS host in case it changed
+        })
+        .where('did', '=', communityDid)
+        .execute();
+
+      logger.info({ communityDid, updatedBy: agent.assertDid }, 'Community app password updated');
+
+      return res.json({ success: true });
+    } catch (err) {
+      logger.error({ error: err, communityDid: req.params.did }, 'Failed to update app password');
+      return res.status(500).json({
+        error: 'Failed to update app password',
+        details: err instanceof Error ? err.message : 'Unknown error',
       });
     }
   });
