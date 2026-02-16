@@ -348,7 +348,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
             }
 
             // Create agent for the community
-            const communityAgent = new BskyAgent({ service: community.pds_host });
+            const communityAgent = new BskyAgent({ service: ensureServiceUrl(community.pds_host) });
             await communityAgent.login({
               identifier: community.handle,
               password: decryptIfNeeded(community.app_password),
@@ -740,11 +740,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Create community agent
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
       // Fetch community profile
       let profileValue: CommunityProfile = {
@@ -883,11 +879,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Create community agent
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
       // Check if already a member
       let cursor: string | undefined;
@@ -1015,11 +1007,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Check if user is admin
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
       const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
         repo: communityDid,
@@ -1095,11 +1083,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(404).json({ error: 'Community not found' });
       }
 
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
       // Check if user is admin
       const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
@@ -1215,11 +1199,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Create community agent
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
       // Check if user is admin
       const adminsResponse = await communityAgent.api.com.atproto.repo.getRecord({
@@ -1293,11 +1273,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Create agent for the community
-      const communityAgent = new BskyAgent({ service: community.pds_host });
-      await communityAgent.login({
-        identifier: community.handle,
-        password: decryptIfNeeded(community.app_password),
-      });
+      const communityAgent = await createCommunityAgent(db, did);
 
       // Fetch admins to verify permissions
       const adminRecord = await communityAgent.api.com.atproto.repo.getRecord({
