@@ -4,6 +4,23 @@ import crypto from 'crypto';
 const CSRF_COOKIE = 'csrf-token';
 const CSRF_HEADER = 'x-csrf-token';
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Shared cookie options for the CSRF token.
+// httpOnly must be false so the frontend can read the token via document.cookie
+// and send it back in the x-csrf-token header (double-submit pattern).
+// sameSite=lax allows the cookie to be sent on cross-subdomain requests
+// (app.opensocial.community → api.opensocial.community).
+const csrfCookieOptions = {
+  httpOnly: false,
+  secure: isProduction,
+  sameSite: 'lax' as const,
+  maxAge: 24 * 60 * 60 * 1000,
+  path: '/',
+  // Share cookie across subdomains in production
+  domain: isProduction ? '.opensocial.community' : undefined,
+};
+
 /**
  * CSRF protection using double-submit cookie pattern.
  * 
@@ -32,12 +49,7 @@ export function csrfProtection(req: Request, res: Response, next: NextFunction) 
     // Set CSRF token cookie on GET requests so clients can read it
     if (req.method === 'GET' && !req.cookies?.[CSRF_COOKIE]) {
       const token = crypto.randomBytes(32).toString('hex');
-      res.cookie(CSRF_COOKIE, token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 24 * 60 * 60 * 1000,
-      });
+      res.cookie(CSRF_COOKIE, token, csrfCookieOptions);
     }
     return next();
   }
@@ -61,11 +73,6 @@ export function csrfProtection(req: Request, res: Response, next: NextFunction) 
  */
 export function setCsrfToken(res: Response): string {
   const token = crypto.randomBytes(32).toString('hex');
-  res.cookie(CSRF_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 24 * 60 * 60 * 1000,
-  });
+  res.cookie(CSRF_COOKIE, token, csrfCookieOptions);
   return token;
 }
