@@ -32,6 +32,10 @@ try {
 const app = express();
 const PORT = config.port;
 
+// Trust the reverse proxy (Azure Container Apps / Envoy) so that
+// req.protocol reflects the original scheme (https) and secure cookies work.
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors({
   origin: config.nodeEnv === 'production' 
