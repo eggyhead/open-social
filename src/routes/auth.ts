@@ -8,7 +8,7 @@ import multer from 'multer';
 import { config } from '../config';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../db';
-import { ensureServiceUrl, createCommunityAgent } from '../services/atproto';
+import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint } from '../services/atproto';
 import { isAdminInList, getOriginalAdminDid, normalizeAdmins } from '../lib/adminUtils';
 import { encrypt, decryptIfNeeded } from '../lib/crypto';
 import { hasScope, MEMBERSHIP_WRITE_SCOPE, OPENSOCIAL_SCOPES } from '../middleware/auth';
@@ -348,9 +348,10 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
             }
 
             // Create agent for the community
-            const communityAgent = new BskyAgent({ service: ensureServiceUrl(community.pds_host) });
+            const resolvedPds = await resolvePdsEndpoint(communityDid, community.pds_host);
+            const communityAgent = new BskyAgent({ service: resolvedPds });
             await communityAgent.login({
-              identifier: community.handle,
+              identifier: communityDid,
               password: decryptIfNeeded(community.app_password),
             });
 
@@ -445,8 +446,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       const communityDid = existingDid;
       let communityHandle: string;
 
-      // Resolve DID to get handle and PDS
-      const pdsHost = 'https://bsky.social';
+      // Resolve DID to get handle and actual PDS endpoint
+      const pdsHost = await resolvePdsEndpoint(existingDid, config.pdsUrl);
       try {
         const profile = await agent.getProfile({ actor: existingDid });
         communityHandle = profile.data.handle || existingDid;
