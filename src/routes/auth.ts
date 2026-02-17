@@ -443,7 +443,25 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(400).json({ error: 'did and appPassword are required' });
       }
 
-      const communityDid = existingDid;
+      // If the user provided a handle instead of a DID, resolve it to the actual DID
+      let communityDid = existingDid;
+      if (!existingDid.startsWith('did:')) {
+        try {
+          const resolveRes = await fetch(
+            `https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(existingDid)}`
+          );
+          if (!resolveRes.ok) {
+            return res.status(400).json({ error: `Could not resolve handle "${existingDid}" to a DID` });
+          }
+          const resolveData = await resolveRes.json() as { did: string };
+          communityDid = resolveData.did;
+          logger.info({ handle: existingDid, did: communityDid }, 'Resolved handle to DID for community creation');
+        } catch (err) {
+          logger.error({ error: err, handle: existingDid }, 'Failed to resolve handle');
+          return res.status(400).json({ error: `Could not resolve handle "${existingDid}"` });
+        }
+      }
+
       let communityHandle: string;
 
       // Resolve DID to get handle and actual PDS endpoint
