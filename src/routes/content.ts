@@ -137,6 +137,62 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
   }
 
   /**
+   * GET /communities/:did/content/check?documentUri=...
+   * Check if a specific document is already shared with this community.
+   * Returns the shared record info if found (rkey, sharedBy), or null.
+   */
+  router.get('/check', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    const documentUri = req.query.documentUri as string;
+    try {
+      if (!documentUri) {
+        return res.status(400).json({ error: 'documentUri query parameter is required' });
+      }
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+
+      let cursor: string | undefined;
+      do {
+        const response = await communityAgent.api.com.atproto.repo.listRecords({
+          repo: communityDid,
+          collection: SHARED_CONTENT_COLLECTION,
+          limit: 100,
+          cursor,
+        });
+
+        const match = response.data.records.find(
+          (r: any) => r.value.documentUri === documentUri,
+        );
+
+        if (match) {
+          return res.json({
+            shared: true,
+            rkey: match.uri.split('/').pop(),
+            sharedBy: (match.value as any).sharedBy,
+            sharedAt: (match.value as any).sharedAt,
+          });
+        }
+
+        cursor = response.data.cursor;
+      } while (cursor);
+
+      res.json({ shared: false });
+    } catch (error: any) {
+      logger.error({ error, communityDid }, 'Error checking shared content');
+      res.status(500).json({ error: error.message || 'Failed to check shared content' });
+    }
+  });
+
+  /**
    * GET /communities/:did/content
    * List all shared content for a community. Paginated via cursor.
    */
@@ -272,21 +328,50 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
 
   /**
    * DELETE /communities/:did/content/:rkey
-   * Remove shared content. Requires admin role.
+   * Remove shared content. Allowed if:
+   *  - The authenticated user is the original sharer (owner can always revoke), OR
+   *  - The authenticated user has delete permission on the collection.
    */
   router.delete('/:rkey', async (req: Request, res: Response) => {
     const communityDid = decodeURIComponent(req.params.did);
     const rkey = req.params.rkey;
     try {
-      const { userDid } = req.body;
-      if (!userDid || !userDid.startsWith('did:')) {
-        return res.status(400).json({ error: 'userDid is required' });
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
+      // Verify community exists
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
       }
 
-      const result = await enforceContentPermission(res, communityDid, userDid, 'delete');
-      if (!result) return;
+      const communityAgent = await createCommunityAgent(db, communityDid);
 
-      const { communityAgent } = result;
+      // Fetch the record to check ownership
+      let isOwner = false;
+      try {
+        const record = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: SHARED_CONTENT_COLLECTION,
+          rkey,
+        });
+        isOwner = (record.data.value as any).sharedBy === userDid;
+      } catch {
+        return res.status(404).json({ error: 'Shared content not found' });
+      }
+
+      // If not the owner, fall back to permission check
+      if (!isOwner) {
+        const result = await enforceContentPermission(res, communityDid, userDid, 'delete');
+        if (!result) return;
+      }
 
       await communityAgent.api.com.atproto.repo.deleteRecord({
         repo: communityDid,
