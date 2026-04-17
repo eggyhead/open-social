@@ -933,7 +933,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         });
       }
 
-      const isAdmin = adminsValue.admins.includes(agent.assertDid);
+      const isAdmin = isAdminInList(agent.assertDid, adminsValue.admins);
       const primaryAdminDid = getOriginalAdminDid(adminsValue.admins);
 
       // Get user's role from their membership record
@@ -1143,7 +1143,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
 
       const adminsValue = adminsResponse.data.value as { admins: string[] };
-      if (!adminsValue.admins.includes(agent.assertDid)) {
+      if (!isAdminInList(agent.assertDid, adminsValue.admins)) {
         return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
       }
 
@@ -1336,7 +1336,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
 
       const adminsValue = adminsResponse.data.value as { admins: string[] };
-      if (!adminsValue.admins.includes(agent.assertDid)) {
+      if (!isAdminInList(agent.assertDid, adminsValue.admins)) {
         return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
       }
 
@@ -1414,7 +1414,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           rkey: 'self',
         });
         const adminsValue = adminsResponse.data.value as { admins: string[] };
-        if (!adminsValue.admins.includes(agent.assertDid)) {
+        if (!isAdminInList(agent.assertDid, adminsValue.admins)) {
           return res.status(403).json({ error: 'Not authorized. Must be an admin.' });
         }
       } catch (err) {

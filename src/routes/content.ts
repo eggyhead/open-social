@@ -1,6 +1,11 @@
+import { Agent } from '@atproto/api';
 import { Router, type Request, type Response } from 'express';
+import { getIronSession } from 'iron-session';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { NodeOAuthClient } from '@atproto/oauth-client-node';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
+import { config } from '../config';
 import { createCommunityAgent } from '../services/atproto';
 import { createWebhookService } from '../services/webhook';
 import {
@@ -13,12 +18,42 @@ import {
 import { logger } from '../lib/logger';
 import { z } from 'zod';
 
+type Session = { did?: string };
+
+const sessionOptions = {
+  cookieName: 'sid',
+  password: config.cookieSecret,
+  cookieOptions: {
+    secure: config.nodeEnv === 'production',
+    sameSite: 'lax' as const,
+    httpOnly: true,
+    path: '/',
+  },
+};
+
+async function getSessionAgent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  oauthClient: NodeOAuthClient
+) {
+  res.setHeader('Vary', 'Cookie');
+  const session = await getIronSession<Session>(req, res, sessionOptions);
+  if (!session.did) return null;
+  try {
+    const oauthSession = await oauthClient.restore(session.did);
+    return oauthSession ? new Agent(oauthSession) : null;
+  } catch (err) {
+    logger.warn({ error: err }, 'OAuth restore failed');
+    await session.destroy();
+    return null;
+  }
+}
+
 const SYSTEM_APP_ID = 'app_system';
 const SHARED_CONTENT_COLLECTION = 'community.opensocial.sharedContent';
 
 // Validation schemas
 const shareContentSchema = z.object({
-  userDid: z.string().min(1).startsWith('did:'),
   type: z.string().min(1),
   documentUri: z.string().min(1).startsWith('at://'),
   documentCid: z.string().min(1),
@@ -31,7 +66,7 @@ const listContentSchema = z.object({
   cursor: z.string().optional(),
 });
 
-export function createContentRouter(db: Kysely<Database>): Router {
+export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Database>): Router {
   const router = Router({ mergeParams: true });
   const webhooks = createWebhookService(db);
 
@@ -165,12 +200,18 @@ export function createContentRouter(db: Kysely<Database>): Router {
   router.post('/', async (req: Request, res: Response) => {
     const communityDid = decodeURIComponent(req.params.did);
     try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
       const parsed = shareContentSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
       }
 
-      const { userDid, type, documentUri, documentCid, title, path } = parsed.data;
+      const { type, documentUri, documentCid, title, path } = parsed.data;
 
       const result = await enforceContentPermission(res, communityDid, userDid, 'create');
       if (!result) return;
