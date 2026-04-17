@@ -10,6 +10,7 @@ import { createAppRouter } from './routes/apps';
 import { createCommunityRouter } from './routes/communities';
 import { createMemberRouter } from './routes/members';
 import { createRecordsRouter } from './routes/records';
+import { createContentRouter } from './routes/content';
 import { createWebhookRouter } from './routes/webhooks';
 import { createPermissionsRouter } from './routes/permissions';
 import { createRateLimiter } from './middleware/rateLimit';
@@ -95,6 +96,7 @@ async function start() {
     app.use('/api/v1/communities', createCommunityRouter(db));
     app.use('/api/v1/communities', createMemberRouter(db));
     app.use('/api/v1/communities', createRecordsRouter(db));
+    app.use('/api/v1/communities/:did/content', createContentRouter(db));
     app.use('/api/v1/communities', createPermissionsRouter(db));
     app.use('/api/v1/webhooks', createWebhookRouter(db));
 

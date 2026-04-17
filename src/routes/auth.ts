@@ -424,6 +424,54 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
     }
   });
 
+  // ─── User publications (standard.site documents) ───────────────
+  router.get('/users/me/publications', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+
+      const userDid = agent.assertDid;
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+
+      // Resolve user's PDS to fetch their site.standard.document records
+      const pdsHost = await resolvePdsEndpoint(userDid, config.pdsUrl);
+
+      const listUrl = new URL(`${pdsHost}/xrpc/com.atproto.repo.listRecords`);
+      listUrl.searchParams.set('repo', userDid);
+      listUrl.searchParams.set('collection', 'site.standard.document');
+      listUrl.searchParams.set('limit', String(limit));
+      if (cursor) listUrl.searchParams.set('cursor', cursor);
+
+      const listRes = await fetch(listUrl.toString());
+      if (!listRes.ok) {
+        // User may not have any documents — return empty
+        return res.json({ publications: [], cursor: undefined });
+      }
+
+      const data = await listRes.json() as {
+        records: Array<{ uri: string; cid: string; value: any }>;
+        cursor?: string;
+      };
+
+      const publications = data.records.map((record) => ({
+        uri: record.uri,
+        cid: record.cid,
+        title: record.value.title || 'Untitled',
+        path: record.value.path || undefined,
+        publishedAt: record.value.publishedAt || undefined,
+        coverImage: record.value.coverImage ? true : undefined,
+      }));
+
+      return res.json({ publications, cursor: data.cursor });
+    } catch (err) {
+      logger.error({ error: err }, 'Failed to get publications');
+      return res.status(500).json({ error: 'Failed to get publications' });
+    }
+  });
+
   // Create a new community (requires an existing AT Protocol account)
   router.post('/users/me/communities', async (req: Request, res: Response) => {
     try {
@@ -567,6 +615,24 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           cid: membershipRecord.data.cid,
         },
       });
+
+      // Enable the system app for this community and seed default permissions
+      try {
+        await db
+          .insertInto('community_app_visibility')
+          .values({
+            community_did: communityDid,
+            app_id: 'app_system',
+            status: 'enabled',
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          .onConflict((oc) => oc.columns(['community_did', 'app_id']).doNothing())
+          .execute();
+        await seedCollectionPermissions(db, communityDid, 'app_system');
+      } catch (err) {
+        logger.warn({ error: err, did: communityDid }, 'Failed to enable system app for new community');
+      }
 
       return res.json({
         success: true,

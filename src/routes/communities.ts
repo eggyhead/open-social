@@ -14,7 +14,7 @@ import { encrypt } from '../lib/crypto';
 import { createAuditLogService } from '../services/auditLog';
 import { createWebhookService } from '../services/webhook';
 import { createCommunityAgent } from '../services/atproto';
-import { checkAppVisibility } from '../services/permissions';
+import { checkAppVisibility, seedCollectionPermissions } from '../services/permissions';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 import { sanitizeUserContent } from '../lib/sanitize';
@@ -143,6 +143,24 @@ export function createCommunityRouter(db: Kysely<Database>): Router {
         });
       } catch (e) {
         logger.error({ error: e, did }, 'Failed to create community records');
+      }
+
+      // Enable the system app for this community and seed default permissions
+      try {
+        await db
+          .insertInto('community_app_visibility')
+          .values({
+            community_did: did,
+            app_id: 'app_system',
+            status: 'enabled',
+            created_at: new Date(),
+            updated_at: new Date(),
+          })
+          .onConflict((oc) => oc.columns(['community_did', 'app_id']).doNothing())
+          .execute();
+        await seedCollectionPermissions(db, did, 'app_system');
+      } catch (e) {
+        logger.warn({ error: e, did }, 'Failed to enable system app for new community');
       }
 
       await auditLog.log({
