@@ -612,7 +612,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         collection: 'community.opensocial.membershipProof',
         record: {
           $type: 'community.opensocial.membershipProof',
+          memberDid: agent.assertDid,
           cid: membershipRecord.data.cid,
+          confirmedAt: new Date().toISOString(),
         },
       });
 
@@ -1585,15 +1587,49 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       } while (cursor);
 
       // Build member list
-      let members = allProofs.map((record: any) => ({
-        uri: record.uri,
-        did: record.value.memberDid || null,
-        cid: record.value.cid,
-        confirmedAt: record.value.confirmedAt || null,
-        isAdmin: record.value.memberDid
-          ? isAdminInList(record.value.memberDid, admins)
-          : false,
-      }));
+      let members = allProofs.map((record: any) => {
+        const memberDid = record.value.memberDid || null;
+        return {
+          uri: record.uri,
+          did: memberDid,
+          cid: record.value.cid,
+          confirmedAt: record.value.confirmedAt || null,
+          isAdmin: memberDid
+            ? isAdminInList(memberDid, admins)
+            : false,
+        };
+      });
+
+      // Backfill: admins whose DID is in the admins record but missing from
+      // proof memberDid (legacy proofs created without memberDid). Match by
+      // checking if a proof's CID corresponds to this admin's membership record.
+      const proofDids = new Set(members.map((m) => m.did).filter(Boolean));
+      const missingAdmins = admins.filter((a: any) => {
+        const did = typeof a === 'string' ? a : a.did;
+        return did && !proofDids.has(did);
+      });
+
+      for (const admin of missingAdmins) {
+        const adminDid = typeof admin === 'string' ? admin : admin.did;
+        // Find a proof record that lacks memberDid — likely belongs to this admin
+        const orphanProof = allProofs.find((p: any) => !p.value.memberDid);
+        if (orphanProof) {
+          // Patch the existing entry in members
+          const idx = members.findIndex((m) => m.uri === orphanProof.uri);
+          if (idx !== -1) {
+            members[idx] = { ...members[idx], did: adminDid, isAdmin: true };
+          }
+        } else {
+          // Admin has no proof at all — still include them so they appear
+          members.push({
+            uri: '',
+            did: adminDid,
+            cid: '',
+            confirmedAt: null,
+            isAdmin: true,
+          });
+        }
+      }
 
       // Filter by DID or handle search
       if (search) {

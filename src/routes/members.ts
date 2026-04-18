@@ -346,14 +346,43 @@ export function createMemberRouter(db: Kysely<Database>): Router {
       }
 
       // Build member list
-      let members = allProofs.map((record: any) => ({
-        uri: record.uri,
-        did: record.value.memberDid || null,
-        confirmedAt: record.value.confirmedAt || null,
-        isAdmin: record.value.memberDid
-          ? isAdminInList(record.value.memberDid, admins)
-          : false,
-      }));
+      let members = allProofs.map((record: any) => {
+        const memberDid = record.value.memberDid || null;
+        return {
+          uri: record.uri,
+          did: memberDid,
+          confirmedAt: record.value.confirmedAt || null,
+          isAdmin: memberDid
+            ? isAdminInList(memberDid, admins)
+            : false,
+        };
+      });
+
+      // Backfill: admins whose DID is in the admins record but missing from
+      // proof memberDid (legacy proofs created without memberDid).
+      const proofDids = new Set(members.map((m) => m.did).filter(Boolean));
+      const missingAdmins = admins.filter((a: any) => {
+        const did = typeof a === 'string' ? a : a.did;
+        return did && !proofDids.has(did);
+      });
+
+      for (const admin of missingAdmins) {
+        const adminDid = typeof admin === 'string' ? admin : admin.did;
+        const orphanProof = allProofs.find((p: any) => !p.value.memberDid);
+        if (orphanProof) {
+          const idx = members.findIndex((m) => m.uri === orphanProof.uri);
+          if (idx !== -1) {
+            members[idx] = { ...members[idx], did: adminDid, isAdmin: true };
+          }
+        } else {
+          members.push({
+            uri: '',
+            did: adminDid,
+            confirmedAt: null,
+            isAdmin: true,
+          });
+        }
+      }
 
       // Filter by DID search
       if (search) {
