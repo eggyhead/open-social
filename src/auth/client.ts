@@ -60,7 +60,9 @@ export async function createOAuthClient(db: Kysely<Database>) {
     stateStore: new StateStore(db),
     sessionStore: new SessionStore(db),
     plcDirectoryUrl: config.plcUrl,
-    handleResolver: config.pdsUrl,
+    // No handleResolver override — use the default AtprotoHandleResolverNode,
+    // which resolves handles via DNS TXT records and HTTP well-known endpoints.
+    // This supports login from any ATProto PDS, not just bsky.social.
     // Allow http:// URLs when running locally against devnet
     allowHttp: config.nodeEnv === 'development',
   });
