@@ -40,7 +40,7 @@ The following environment variables are **required** for the API server to start
 - `LOG_LEVEL` - Logging level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` (default: `info`)
 - `SERVICE_URL` - Public URL of this API service (for OAuth callbacks)
 - `PLC_URL` - ATProto PLC directory URL (default: `https://plc.directory`)
-- `PDS_URL` - ATProto PDS URL (default: `https://bsky.social`)
+- `PDS_URL` - ATProto PDS URL used as a fallback when resolving a community's PDS endpoint (default: `https://bsky.social`). OAuth login supports any ATProto PDS — users are not restricted to this PDS.
 - `PRIVATE_KEYS` - JSON array of JWK private keys for OAuth
 
 ## Quick Start
