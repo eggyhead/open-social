@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import { config } from './config';
 import { createDb } from './db';
 import { createOAuthClient } from './auth/client';
-import { initDidCache } from './services/atproto';
+import { initDidCache, setOAuthClient } from './services/atproto';
 import { createAuthRouter } from './routes/auth';
 import { createAppRouter } from './routes/apps';
 import { createCommunityRouter } from './routes/communities';
@@ -78,6 +78,10 @@ async function start() {
 
     // Initialize OAuth client
     const oauthClient = await createOAuthClient(db);
+    // Register the OAuth client so non-OAuth code paths (e.g. community
+    // agent app-password login) can reuse its `OAuthResolver` to discover
+    // the proper authorization server from PDS metadata.
+    setOAuthClient(oauthClient);
     logger.info('OAuth client initialized');
 
     // Apply global middleware

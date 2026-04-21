@@ -12,7 +12,9 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   ensureServiceUrl,
   resolvePdsEndpoint,
+  resolveAuthServer,
   resolveHandleToDid,
+  setOAuthClient,
   didResolver,
   handleResolver,
 } from './atproto';
@@ -141,5 +143,85 @@ describe('resolveHandleToDid', () => {
     vi.spyOn(handleResolver, 'resolve').mockResolvedValue(undefined);
 
     await expect(resolveHandleToDid('nope.example.com')).rejects.toThrow(/Could not resolve handle/);
+  });
+});
+
+describe('resolveAuthServer', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // Reset to "no client registered" state at the top of each test.
+    setOAuthClient(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setOAuthClient(null);
+  });
+
+  it('returns the auth server issuer discovered via OAuthResolver for a DID', async () => {
+    const resolveSpy = vi.fn().mockResolvedValue({
+      metadata: { issuer: 'https://entryway.example.com' },
+    });
+    setOAuthClient({
+      oauthResolver: { resolve: resolveSpy, resolveFromService: vi.fn() },
+    } as never);
+
+    const url = await resolveAuthServer('did:plc:abc123');
+    expect(url).toBe('https://entryway.example.com');
+    expect(resolveSpy).toHaveBeenCalledWith('did:plc:abc123');
+  });
+
+  it('uses resolveFromService when given a PDS URL', async () => {
+    const resolveFromServiceSpy = vi.fn().mockResolvedValue({
+      metadata: { issuer: 'https://entryway.example.com' },
+    });
+    setOAuthClient({
+      oauthResolver: { resolve: vi.fn(), resolveFromService: resolveFromServiceSpy },
+    } as never);
+
+    const url = await resolveAuthServer('https://pds.example.com');
+    expect(url).toBe('https://entryway.example.com');
+    expect(resolveFromServiceSpy).toHaveBeenCalledWith('https://pds.example.com');
+  });
+
+  it('falls back to the PDS endpoint when the OAuth resolver fails', async () => {
+    const resolveSpy = vi.fn().mockRejectedValue(new Error('boom'));
+    setOAuthClient({
+      oauthResolver: { resolve: resolveSpy, resolveFromService: vi.fn() },
+    } as never);
+    vi.spyOn(didResolver, 'resolve').mockResolvedValue({
+      id: 'did:plc:abc123',
+      service: [
+        {
+          id: '#atproto_pds',
+          type: 'AtprotoPersonalDataServer',
+          serviceEndpoint: 'https://pds.example.com',
+        },
+      ],
+    } as never);
+
+    const url = await resolveAuthServer('did:plc:abc123', 'pds.fallback.example');
+    expect(url).toBe('https://pds.example.com');
+  });
+
+  it('falls back to the PDS endpoint when no OAuth client is registered (single-PDS deployment)', async () => {
+    vi.spyOn(didResolver, 'resolve').mockResolvedValue({
+      id: 'did:plc:abc123',
+      service: [
+        {
+          id: '#atproto_pds',
+          type: 'AtprotoPersonalDataServer',
+          serviceEndpoint: 'https://pds.example.com',
+        },
+      ],
+    } as never);
+
+    const url = await resolveAuthServer('did:plc:abc123');
+    expect(url).toBe('https://pds.example.com');
+  });
+
+  it('returns the supplied service URL as a fallback when no client is registered', async () => {
+    const url = await resolveAuthServer('https://pds.example.com');
+    expect(url).toBe('https://pds.example.com');
   });
 });

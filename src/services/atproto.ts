@@ -1,5 +1,6 @@
 import { BskyAgent, AtpAgent } from '@atproto/api';
 import { DidResolver, HandleResolver, MemoryCache, getPds, getHandle } from '@atproto/identity';
+import type { NodeOAuthClient } from '@atproto/oauth-client-node';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { decryptIfNeeded } from '../lib/crypto';
@@ -115,6 +116,80 @@ export async function resolvePdsEndpoint(did: string, fallback?: string): Promis
 }
 
 /**
+ * Reference to the application's `NodeOAuthClient`, registered at startup so
+ * non-OAuth code paths (e.g. community agent app-password login) can reuse
+ * the client's `OAuthResolver` to discover the proper authorization server.
+ *
+ * In the Bluesky network, multiple PDS instances can share a single
+ * "entryway" that acts as the Authorization Server. The PDS serves a
+ * protected-resource metadata document that points to that auth server, and
+ * `OAuthResolver` performs the lookup. For single-PDS deployments the auth
+ * server URL is simply the PDS URL, so behaviour is unchanged.
+ */
+let oauthClientRef: NodeOAuthClient | null = null;
+
+/**
+ * Register the OAuth client so {@link resolveAuthServer} can use its
+ * `OAuthResolver` to discover authorization servers from PDS metadata.
+ * Safe to call multiple times; the most recent client wins. Pass `null` to
+ * unregister (primarily useful in tests).
+ */
+export function setOAuthClient(client: NodeOAuthClient | null): void {
+  oauthClientRef = client;
+}
+
+/**
+ * Resolve the OAuth authorization server URL for an identity (DID or handle)
+ * or an existing PDS service URL.
+ *
+ * Uses the registered `NodeOAuthClient`'s `OAuthResolver` to fetch the PDS's
+ * protected-resource metadata and extract the `issuer` of its authorization
+ * server. This is the URL community agents should target for
+ * `BskyAgent.login()` (createSession) so that, in entryway architectures
+ * (PDS != auth server), credentials are validated by the entryway. After
+ * login, `BskyAgent` automatically dispatches subsequent XRPC calls to the
+ * actual PDS via the `pdsUrl` extracted from the `didDoc` returned by
+ * createSession, so a single agent works for both flows.
+ *
+ * If the OAuth client has not been registered, or the resolver call fails
+ * (e.g. PDS without `.well-known/oauth-protected-resource`), this falls back
+ * to {@link resolvePdsEndpoint} so single-PDS deployments — where the auth
+ * server URL is the PDS URL — continue to work as before.
+ */
+export async function resolveAuthServer(
+  identityOrServiceUrl: string,
+  fallback?: string,
+): Promise<string> {
+  const client = oauthClientRef;
+  if (client) {
+    try {
+      const isUrl = /^https?:\/\//.test(identityOrServiceUrl);
+      const result = isUrl
+        ? await client.oauthResolver.resolveFromService(identityOrServiceUrl)
+        : await client.oauthResolver.resolve(identityOrServiceUrl);
+      if (result?.metadata?.issuer) {
+        return result.metadata.issuer;
+      }
+    } catch (err) {
+      logger.warn(
+        { input: identityOrServiceUrl, error: err },
+        'Failed to resolve auth server via OAuthResolver; falling back to PDS endpoint',
+      );
+    }
+  }
+  // Fallback: use the PDS endpoint. In single-PDS architectures the PDS URL
+  // *is* the auth server URL, so this preserves existing behaviour.
+  if (identityOrServiceUrl.startsWith('did:')) {
+    return resolvePdsEndpoint(identityOrServiceUrl, fallback);
+  }
+  if (/^https?:\/\//.test(identityOrServiceUrl)) {
+    return ensureServiceUrl(identityOrServiceUrl);
+  }
+  if (fallback) return ensureServiceUrl(fallback);
+  throw new Error(`Could not resolve auth server for ${identityOrServiceUrl}`);
+}
+
+/**
  * Resolve a handle to its DID with bidirectional verification.
  *
  * Per the ATProto identity spec, a handle "claim" is only valid if the DID
@@ -166,11 +241,16 @@ export async function createCommunityAgent(db: Kysely<Database>, did: string): P
       throw new Error('Community not found');
     }
 
-    // Resolve the actual PDS endpoint from the DID document,
-    // falling back to the stored pds_host if resolution fails.
-    const pdsUrl = await resolvePdsEndpoint(did, community.pds_host);
+    // Discover the OAuth authorization server for the community's identity.
+    // In single-PDS deployments this resolves to the PDS URL itself; in
+    // entryway architectures (PDS != auth server) it resolves to the
+    // entryway. `BskyAgent.login()` (createSession) is targeted at this
+    // URL so credentials are validated by the right server. After login,
+    // the agent automatically dispatches subsequent XRPC calls to the
+    // user's actual PDS via the `pdsUrl` extracted from the DID document.
+    const authServerUrl = await resolveAuthServer(did, community.pds_host);
 
-    const agent = new BskyAgent({ service: pdsUrl });
+    const agent = new BskyAgent({ service: authServerUrl });
 
     await retry(
       () => agent.login({
@@ -186,7 +266,7 @@ export async function createCommunityAgent(db: Kysely<Database>, did: string): P
         context: {
           did,
           handle: community.handle,
-          pdsHost: pdsUrl,
+          authServerUrl,
         },
       }
     );

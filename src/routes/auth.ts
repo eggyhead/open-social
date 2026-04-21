@@ -8,7 +8,7 @@ import multer from 'multer';
 import { config } from '../config';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../db';
-import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, resolveHandleToDid, invalidateCommunityAgent } from '../services/atproto';
+import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, resolveAuthServer, resolveHandleToDid, invalidateCommunityAgent } from '../services/atproto';
 import { isAdminInList, getOriginalAdminDid, normalizeAdmins } from '../lib/adminUtils';
 import { encrypt, decryptIfNeeded } from '../lib/crypto';
 import { hasScope, MEMBERSHIP_WRITE_SCOPE, OPENSOCIAL_SCOPES } from '../middleware/auth';
@@ -350,9 +350,11 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
               return null;
             }
 
-            // Create agent for the community
-            const resolvedPds = await resolvePdsEndpoint(communityDid, community.pds_host);
-            const communityAgent = new BskyAgent({ service: resolvedPds });
+            // Create agent for the community. Target the OAuth auth server
+            // (entryway) for login; subsequent record reads go to the
+            // user's actual PDS via the agent's auto-populated `pdsUrl`.
+            const authServerUrl = await resolveAuthServer(communityDid, community.pds_host);
+            const communityAgent = new BskyAgent({ service: authServerUrl });
             await communityAgent.login({
               identifier: communityDid,
               password: decryptIfNeeded(community.app_password),
@@ -511,6 +513,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
 
       // Resolve DID to get handle and actual PDS endpoint
       const pdsHost = await resolvePdsEndpoint(existingDid, config.pdsUrl);
+      // Discover the OAuth authorization server (entryway) to target for
+      // login. In single-PDS deployments this is the same as `pdsHost`.
+      const authServerUrl = await resolveAuthServer(existingDid, pdsHost);
       try {
         const profile = await agent.getProfile({ actor: existingDid });
         communityHandle = profile.data.handle || existingDid;
@@ -519,8 +524,9 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         communityHandle = existingDid;
       }
 
-      // Login with app password to verify credentials
-      const bskyAgent = new BskyAgent({ service: pdsHost });
+      // Login with app password to verify credentials. Subsequent repo
+      // writes via the same agent are auto-dispatched to the PDS.
+      const bskyAgent = new BskyAgent({ service: authServerUrl });
       await bskyAgent.login({
         identifier: existingDid,
         password: appPassword,
@@ -1421,9 +1427,12 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(403).json({ error: 'Could not verify admin status' });
       }
 
-      // Verify the new app password works by attempting login
+      // Verify the new app password works by attempting login. Target the
+      // OAuth auth server (entryway) so verification works in both
+      // single-PDS and entryway architectures.
       const pdsUrl = await resolvePdsEndpoint(communityDid, community.pds_host);
-      const testAgent = new BskyAgent({ service: pdsUrl });
+      const authServerUrl = await resolveAuthServer(communityDid, pdsUrl);
+      const testAgent = new BskyAgent({ service: authServerUrl });
       try {
         await testAgent.login({
           identifier: communityDid,
