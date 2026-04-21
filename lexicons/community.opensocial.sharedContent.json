@@ -50,6 +50,26 @@
             "type": "string",
             "format": "datetime",
             "description": "When the content was shared with the community"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Cached event start time (only present when type=event)"
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Cached event end time (only present when type=event)"
+          },
+          "location": {
+            "type": "string",
+            "maxGraphemes": 512,
+            "description": "Cached event location string (only present when type=event)"
+          },
+          "mode": {
+            "type": "string",
+            "description": "Cached event mode (only present when type=event)",
+            "knownValues": ["in-person", "virtual", "hybrid"]
           }
         }
       }

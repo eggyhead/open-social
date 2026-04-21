@@ -53,13 +53,26 @@ const SYSTEM_APP_ID = 'app_system';
 const SHARED_CONTENT_COLLECTION = 'community.opensocial.sharedContent';
 
 // Validation schemas
-const shareContentSchema = z.object({
-  type: z.string().min(1),
-  documentUri: z.string().min(1).startsWith('at://'),
-  documentCid: z.string().min(1),
-  title: z.string().min(1).max(512),
-  path: z.string().max(1024).optional(),
-});
+const shareContentSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('document'),
+    documentUri: z.string().min(1).startsWith('at://'),
+    documentCid: z.string().min(1),
+    title: z.string().min(1).max(512),
+    path: z.string().max(1024).optional(),
+  }),
+  z.object({
+    type: z.literal('event'),
+    documentUri: z.string().min(1).startsWith('at://'),
+    documentCid: z.string().min(1),
+    title: z.string().min(1).max(512),
+    path: z.string().max(1024).optional(),
+    startsAt: z.string().datetime().optional(),
+    endsAt: z.string().datetime().optional(),
+    location: z.string().max(512).optional(),
+    mode: z.enum(['in-person', 'virtual', 'hybrid']).optional(),
+  }),
+]);
 
 const listContentSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -235,6 +248,11 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
         title: r.value.title,
         path: r.value.path,
         sharedAt: r.value.sharedAt,
+        // Event-specific cached fields (present only when type=event)
+        ...(r.value.startsAt !== undefined ? { startsAt: r.value.startsAt } : {}),
+        ...(r.value.endsAt !== undefined ? { endsAt: r.value.endsAt } : {}),
+        ...(r.value.location !== undefined ? { location: r.value.location } : {}),
+        ...(r.value.mode !== undefined ? { mode: r.value.mode } : {}),
       }));
 
       res.json({
@@ -294,6 +312,16 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
         return res.status(409).json({ error: 'This content has already been shared with this community' });
       }
 
+      // Build event-specific fields if type=event
+      const eventFields: Record<string, string> = {};
+      if (parsed.data.type === 'event') {
+        const { startsAt, endsAt, location, mode } = parsed.data;
+        if (startsAt) eventFields.startsAt = startsAt;
+        if (endsAt) eventFields.endsAt = endsAt;
+        if (location) eventFields.location = location;
+        if (mode) eventFields.mode = mode;
+      }
+
       const response = await communityAgent.api.com.atproto.repo.createRecord({
         repo: communityDid,
         collection: SHARED_CONTENT_COLLECTION,
@@ -305,6 +333,7 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
           sharedBy: userDid,
           title,
           ...(path ? { path } : {}),
+          ...eventFields,
           sharedAt: new Date().toISOString(),
         },
       });

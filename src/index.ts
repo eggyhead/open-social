@@ -14,6 +14,7 @@ import { createRecordsRouter } from './routes/records';
 import { createContentRouter } from './routes/content';
 import { createWebhookRouter } from './routes/webhooks';
 import { createPermissionsRouter } from './routes/permissions';
+import { createHierarchyRouter } from './routes/hierarchy';
 import { createRateLimiter } from './middleware/rateLimit';
 import { csrfProtection } from './middleware/csrf';
 import { logger } from './lib/logger';
@@ -107,6 +108,7 @@ async function start() {
     app.use('/api/v1/communities', createRecordsRouter(db));
     app.use('/api/v1/communities/:did/content', createContentRouter(oauthClient, db));
     app.use('/api/v1/communities', createPermissionsRouter(db));
+    app.use('/api/v1/communities', createHierarchyRouter(db));
     app.use('/api/v1/webhooks', createWebhookRouter(db));
 
     // Error handling
