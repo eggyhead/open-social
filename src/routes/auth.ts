@@ -243,7 +243,10 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       const message = err instanceof Error ? err.message : 'unexpected error';
       const stack = err instanceof Error ? err.stack : undefined;
       logger.error({ error: message, stack, name: err instanceof Error ? err.name : undefined }, 'OAuth authorize failed');
-      return res.type('json').send({ error: message });
+      const redirectUrl = config.nodeEnv === 'production'
+        ? config.corsOrigin || config.serviceUrl || 'http://127.0.0.1:5174'
+        : 'http://127.0.0.1:5174';
+      return res.redirect(`${redirectUrl}?error=${encodeURIComponent(message)}`);
     }
   });
 
