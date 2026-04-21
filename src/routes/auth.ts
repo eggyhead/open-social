@@ -2976,6 +2976,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
         .execute();
 
+      await auditLog.log({ communityDid: childDid, adminDid: agent.assertDid, action: 'hierarchy.requested', targetDid: parentDid, metadata: { role: 'child' } });
+
       res.status(201).json({
         uri: response.data.uri, cid: response.data.cid, rkey, status: 'pending',
         message: 'Hierarchy request created. Waiting for parent community approval.',
@@ -3045,6 +3047,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         })
         .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
         .execute();
+
+      await auditLog.log({ communityDid: parentDid, adminDid: agent.assertDid, action: 'hierarchy.invited', targetDid: childDid, metadata: { role: 'parent' } });
 
       res.status(201).json({
         uri: response.data.uri, cid: response.data.cid, rkey, status: 'pending',
@@ -3139,6 +3143,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         .where('requester_did', '=', childDid)
         .where('target_did', '=', parentDid)
         .execute();
+
+      await auditLog.log({ communityDid: parentDid, adminDid: agent.assertDid, action: 'hierarchy.approved', targetDid: childDid, metadata: { role: 'parent' } });
 
       res.status(201).json({
         uri: parentResponse.data.uri, cid: parentResponse.data.cid,
@@ -3235,6 +3241,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         .where('target_did', '=', childDid)
         .execute();
 
+      await auditLog.log({ communityDid: childDid, adminDid: agent.assertDid, action: 'hierarchy.accepted', targetDid: parentDid, metadata: { role: 'child' } });
+
       res.status(201).json({
         uri: childResponse.data.uri, cid: childResponse.data.cid,
         rkey: childResponse.data.uri.split('/').pop(),
@@ -3296,6 +3304,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         .deleteFrom('pending_hierarchy_requests')
         .where('id', '=', pendingRow.id)
         .execute();
+
+      await auditLog.log({ communityDid, adminDid: agent.assertDid, action: 'hierarchy.rejected', targetDid: counterpartyDid });
 
       res.json({ success: true, message: 'Hierarchy request rejected' });
     } catch (error) {
@@ -3378,6 +3388,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           ]),
         )
         .execute();
+
+      await auditLog.log({ communityDid, adminDid: agent.assertDid, action: 'hierarchy.revoked', targetDid: counterpartyDid, metadata: { role: hierarchyRecord.role } });
 
       res.json({ success: true, message: 'Hierarchy relationship revoked' });
     } catch (error) {

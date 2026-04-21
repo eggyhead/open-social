@@ -25,7 +25,13 @@ export type AuditAction =
   | 'role.updated'
   | 'role.deleted'
   | 'role.assigned'
-  | 'role.revoked';
+  | 'role.revoked'
+  | 'hierarchy.requested'
+  | 'hierarchy.invited'
+  | 'hierarchy.approved'
+  | 'hierarchy.accepted'
+  | 'hierarchy.rejected'
+  | 'hierarchy.revoked';
 
 export function createAuditLogService(db: Kysely<Database>) {
   async function log(params: {
