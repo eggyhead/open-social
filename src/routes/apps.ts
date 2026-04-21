@@ -303,14 +303,19 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
         return res.status(401).json({ error: 'API key required (X-Api-Key header)' });
       }
 
-      const app = await db
+      // API key hashes use scrypt with a per-key random salt, so we can't
+      // look up the app directly by hash. Fetch all active apps with a key
+      // and find the one whose stored hash matches the supplied key.
+      const apps = await db
         .selectFrom('apps')
         .selectAll()
         .where('status', '=', 'active')
         .where('api_key', 'is not', null)
-        .executeTakeFirst();
+        .execute();
 
-      if (!app || !verifyApiKey(apiKey, app.api_key)) {
+      const app = apps.find((candidate) => verifyApiKey(apiKey, candidate.api_key));
+
+      if (!app) {
         return res.status(401).json({ error: 'Invalid API key' });
       }
 

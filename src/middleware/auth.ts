@@ -30,15 +30,19 @@ export function createVerifyApiKey(db: Kysely<Database>) {
     }
 
     try {
-      // Look up the app and verify the provided key against the stored hash
-      const app = await db
+      // API key hashes use scrypt with a per-key random salt, so we can't
+      // look up the app directly by hash. Fetch all active apps with a key
+      // and find the one whose stored hash matches the supplied key.
+      const apps = await db
         .selectFrom('apps')
         .selectAll()
         .where('status', '=', 'active')
         .where('api_key', 'is not', null)
-        .executeTakeFirst();
+        .execute();
 
-      if (!app || !verifyApiKeyHash(apiKey, app.api_key)) {
+      const app = apps.find((candidate) => verifyApiKeyHash(apiKey, candidate.api_key));
+
+      if (!app) {
         return res.status(401).json({ error: 'Invalid API key' });
       }
 
