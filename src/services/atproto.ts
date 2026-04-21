@@ -1,10 +1,29 @@
 import { BskyAgent, AtpAgent } from '@atproto/api';
+import { DidResolver, HandleResolver, MemoryCache, getPds, getHandle } from '@atproto/identity';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { decryptIfNeeded } from '../lib/crypto';
 import { retry, isTransientError } from '../lib/retry';
 import { logger } from '../lib/logger';
 import { config } from '../config';
+
+/**
+ * Shared identity resolvers backed by an in-memory DID document cache.
+ *
+ * Using the official `@atproto/identity` package gives us:
+ *   - support for both `did:plc` and `did:web`
+ *   - bidirectional handle verification (handle -> DID -> handle)
+ *   - automatic caching of DID documents (avoids repeated PLC lookups)
+ *   - DNS TXT + HTTPS well-known handle resolution
+ */
+const didCache = new MemoryCache();
+
+export const didResolver = new DidResolver({
+  plcUrl: config.plcUrl,
+  didCache,
+});
+
+export const handleResolver = new HandleResolver({});
 
 /**
  * In-memory cache for authenticated community agents.
@@ -50,23 +69,53 @@ export function ensureServiceUrl(pdsHost: string): string {
 }
 
 /**
- * Resolve a DID to its actual PDS endpoint via the PLC directory.
- * Falls back to the provided fallback URL if resolution fails.
+ * Resolve a DID to its actual PDS endpoint via the DID document.
+ *
+ * Uses the official `@atproto/identity` `DidResolver`, which supports both
+ * `did:plc` (via the PLC directory) and `did:web` (via the well-known URL),
+ * and caches DID documents in memory. Falls back to the provided fallback
+ * URL if resolution fails.
  */
 export async function resolvePdsEndpoint(did: string, fallback?: string): Promise<string> {
   try {
-    const res = await fetch(`${config.plcUrl}/${did}`);
-    if (!res.ok) throw new Error(`PLC directory returned ${res.status}`);
-    const doc = await res.json() as { service?: { id: string; serviceEndpoint: string }[] };
-    const pds = doc.service?.find((s) => s.id === '#atproto_pds');
-    if (pds?.serviceEndpoint) {
-      return pds.serviceEndpoint;
+    const doc = await didResolver.resolve(did);
+    if (doc) {
+      const pds = getPds(doc);
+      if (pds) {
+        return pds;
+      }
     }
   } catch (err) {
     logger.warn({ did, error: err }, 'Failed to resolve PDS from DID document');
   }
   if (fallback) return ensureServiceUrl(fallback);
   throw new Error(`Could not resolve PDS for ${did}`);
+}
+
+/**
+ * Resolve a handle to its DID with bidirectional verification.
+ *
+ * Per the ATProto identity spec, a handle "claim" is only valid if the DID
+ * document the handle resolves to also lists the same handle. This function
+ * performs that round-trip check and throws if the two do not agree.
+ */
+export async function resolveHandleToDid(handle: string): Promise<string> {
+  const normalized = handle.toLowerCase().replace(/^@/, '');
+  const did = await handleResolver.resolve(normalized);
+  if (!did) {
+    throw new Error(`Could not resolve handle "${handle}" to a DID`);
+  }
+  const doc = await didResolver.resolve(did);
+  if (!doc) {
+    throw new Error(`Could not resolve DID document for "${did}"`);
+  }
+  const docHandle = getHandle(doc);
+  if (!docHandle || docHandle.toLowerCase() !== normalized) {
+    throw new Error(
+      `Handle verification failed: "${handle}" does not match DID document handle "${docHandle ?? 'none'}"`,
+    );
+  }
+  return did;
 }
 
 export async function createCommunityAgent(db: Kysely<Database>, did: string): Promise<BskyAgent> {

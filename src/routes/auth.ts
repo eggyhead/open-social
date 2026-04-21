@@ -8,7 +8,7 @@ import multer from 'multer';
 import { config } from '../config';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '../db';
-import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, invalidateCommunityAgent } from '../services/atproto';
+import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, resolveHandleToDid, invalidateCommunityAgent } from '../services/atproto';
 import { isAdminInList, getOriginalAdminDid, normalizeAdmins } from '../lib/adminUtils';
 import { encrypt, decryptIfNeeded } from '../lib/crypto';
 import { hasScope, MEMBERSHIP_WRITE_SCOPE, OPENSOCIAL_SCOPES } from '../middleware/auth';
@@ -494,22 +494,16 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         return res.status(400).json({ error: 'did and appPassword are required' });
       }
 
-      // If the user provided a handle instead of a DID, resolve it to the actual DID
+      // If the user provided a handle instead of a DID, resolve it to the
+      // actual DID (with bidirectional verification per ATProto spec).
       let communityDid = existingDid;
       if (!existingDid.startsWith('did:')) {
         try {
-          const resolveRes = await fetch(
-            `https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(existingDid)}`
-          );
-          if (!resolveRes.ok) {
-            return res.status(400).json({ error: `Could not resolve handle "${existingDid}" to a DID` });
-          }
-          const resolveData = await resolveRes.json() as { did: string };
-          communityDid = resolveData.did;
+          communityDid = await resolveHandleToDid(existingDid);
           logger.info({ handle: existingDid, did: communityDid }, 'Resolved handle to DID for community creation');
         } catch (err) {
           logger.error({ error: err, handle: existingDid }, 'Failed to resolve handle');
-          return res.status(400).json({ error: `Could not resolve handle "${existingDid}"` });
+          return res.status(400).json({ error: `Could not resolve handle "${existingDid}" to a DID` });
         }
       }
 
