@@ -168,6 +168,31 @@ function getAgentScope(agent: Agent): string | undefined {
   return (agent as any).__grantedScope;
 }
 
+// ─── Event record helpers ─────────────────────────────────────────────
+
+function parseEventMode(value: unknown): 'in-person' | 'virtual' | 'hybrid' {
+  const s = String(value ?? '').replace('#', '');
+  if (s === 'inperson' || s === 'in-person') return 'in-person';
+  if (s === 'virtual') return 'virtual';
+  if (s === 'hybrid') return 'hybrid';
+  return 'virtual';
+}
+
+function extractEventLocation(locations: unknown): string | undefined {
+  if (!Array.isArray(locations) || locations.length === 0) return undefined;
+  const loc = locations[0] as Record<string, unknown>;
+
+  if (loc.locality || loc.region || loc.country) {
+    return [loc.locality, loc.region, loc.country].filter(Boolean).join(', ');
+  }
+  if (loc.latitude !== undefined && loc.longitude !== undefined) {
+    if (typeof loc.name === 'string' && loc.name.length > 0) return loc.name;
+    return `${loc.latitude}, ${loc.longitude}`;
+  }
+  if (typeof loc.name === 'string') return loc.name;
+  return undefined;
+}
+
 export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Database>) {
   const router = express.Router();
 
@@ -475,6 +500,58 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
     } catch (err) {
       logger.error({ error: err }, 'Failed to get publications');
       return res.status(500).json({ error: 'Failed to get publications' });
+    }
+  });
+
+  // ─── User events (community.lexicon.calendar.event records) ──────
+  router.get('/users/me/events', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+
+      const userDid = agent.assertDid;
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+
+      const pdsHost = await resolvePdsEndpoint(userDid, config.pdsUrl);
+
+      const listUrl = new URL(`${pdsHost}/xrpc/com.atproto.repo.listRecords`);
+      listUrl.searchParams.set('repo', userDid);
+      listUrl.searchParams.set('collection', 'community.lexicon.calendar.event');
+      listUrl.searchParams.set('limit', String(limit));
+      if (cursor) listUrl.searchParams.set('cursor', cursor);
+
+      const listRes = await fetch(listUrl.toString());
+      if (!listRes.ok) {
+        return res.json({ events: [], cursor: undefined });
+      }
+
+      const data = await listRes.json() as {
+        records: Array<{ uri: string; cid: string; value: any }>;
+        cursor?: string;
+      };
+
+      const events = data.records.map((record) => {
+        const v = record.value;
+        return {
+          uri: record.uri,
+          cid: record.cid,
+          name: (v.name as string) || 'Untitled Event',
+          startsAt: v.startsAt || undefined,
+          endsAt: v.endsAt || undefined,
+          description: v.description || undefined,
+          mode: parseEventMode(v.mode),
+          location: extractEventLocation(v.locations),
+          status: (v.status as string) || 'scheduled',
+        };
+      });
+
+      return res.json({ events, cursor: data.cursor });
+    } catch (err) {
+      logger.error({ error: err }, 'Failed to get events');
+      return res.status(500).json({ error: 'Failed to get events' });
     }
   });
 

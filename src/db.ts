@@ -176,6 +176,21 @@ export interface CommunityAppCollectionPermission {
 }
 
 /**
+ * Tracks pending parent/child hierarchy requests so the target community can
+ * discover incoming proposals.  Analogous to `pending_members`.
+ */
+export interface PendingHierarchyRequest {
+  id: Generated<number>;
+  requester_did: string;
+  target_did: string;
+  /** 'parent' | 'child' — the role of the requester in the proposed relationship */
+  requester_role: string;
+  requester_record_rkey: string;
+  admin_did: string;
+  created_at: Generated<Date>;
+}
+
+/**
  * Cached DID documents, persisted across process restarts so we can avoid
  * re-hitting the PLC directory on every login.  Backed by the `did_cache`
  * table introduced in migration 007.
@@ -205,6 +220,7 @@ export interface Database {
   community_member_roles: CommunityMemberRole;
   app_default_permissions: AppDefaultPermission;
   community_app_collection_permissions: CommunityAppCollectionPermission;
+  pending_hierarchy_requests: PendingHierarchyRequest;
   did_cache: DidCacheEntry;
 }
 

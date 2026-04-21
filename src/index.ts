@@ -15,6 +15,7 @@ import { createContentRouter } from './routes/content';
 import { createWebhookRouter } from './routes/webhooks';
 import { createPermissionsRouter } from './routes/permissions';
 import { createHierarchyRouter } from './routes/hierarchy';
+import { createEventsRouter } from './routes/events';
 import { createRateLimiter } from './middleware/rateLimit';
 import { csrfProtection } from './middleware/csrf';
 import { logger } from './lib/logger';
@@ -110,6 +111,7 @@ async function start() {
     app.use('/api/v1/communities', createPermissionsRouter(db));
     app.use('/api/v1/communities', createHierarchyRouter(db));
     app.use('/api/v1/webhooks', createWebhookRouter(db));
+    app.use('/api/v1/events', createEventsRouter(oauthClient));
 
     // Error handling
     app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
