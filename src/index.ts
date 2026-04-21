@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { config } from './config';
 import { createDb } from './db';
 import { createOAuthClient } from './auth/client';
+import { initDidCache } from './services/atproto';
 import { createAuthRouter } from './routes/auth';
 import { createAppRouter } from './routes/apps';
 import { createCommunityRouter } from './routes/communities';
@@ -66,6 +67,10 @@ async function start() {
     // Initialize database
     const db = createDb(config.databaseUrl);
     logger.info('Database connected');
+
+    // Swap the in-memory DID cache for a PostgreSQL-backed one and start the
+    // periodic cleanup job that prunes expired entries.
+    initDidCache(db);
 
     // NOTE: Database schema is now managed through migrations.
     // To set up or update the database schema, run: npm run migrate:up
