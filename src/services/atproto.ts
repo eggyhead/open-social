@@ -6,24 +6,46 @@ import { decryptIfNeeded } from '../lib/crypto';
 import { retry, isTransientError } from '../lib/retry';
 import { logger } from '../lib/logger';
 import { config } from '../config';
+import { PostgresDidCache, startDidCacheCleanup } from './didCache';
 
 /**
- * Shared identity resolvers backed by an in-memory DID document cache.
+ * Shared identity resolvers backed by a DID document cache.
  *
  * Using the official `@atproto/identity` package gives us:
  *   - support for both `did:plc` and `did:web`
  *   - bidirectional handle verification (handle -> DID -> handle)
  *   - automatic caching of DID documents (avoids repeated PLC lookups)
  *   - DNS TXT + HTTPS well-known handle resolution
+ *
+ * The resolver is created with a process-local `MemoryCache` so it works in
+ * tests and scripts that don't go through `initDidCache()`.  At server start,
+ * `initDidCache(db)` swaps in a PostgreSQL-backed cache so DID documents
+ * survive process restarts.
  */
-const didCache = new MemoryCache();
+const memoryDidCache = new MemoryCache();
 
 export const didResolver = new DidResolver({
   plcUrl: config.plcUrl,
-  didCache,
+  didCache: memoryDidCache,
 });
 
 export const handleResolver = new HandleResolver({});
+
+/**
+ * Replace the resolver's in-memory DID cache with a PostgreSQL-backed one and
+ * start the periodic cleanup job that prunes expired entries.
+ *
+ * Returns a disposer that stops the cleanup interval — primarily useful for
+ * tests.  Safe to call multiple times: each call replaces the previous cache.
+ */
+export function initDidCache(db: Kysely<Database>): () => void {
+  const postgresCache = new PostgresDidCache(db);
+  // `cache` is a public property on BaseResolver; swapping it lets us reuse
+  // the existing `didResolver` instance without rebinding every importer.
+  didResolver.cache = postgresCache;
+  logger.info('DID resolver now using PostgreSQL-backed cache');
+  return startDidCacheCleanup(postgresCache);
+}
 
 /**
  * In-memory cache for authenticated community agents.
