@@ -12,6 +12,7 @@ import { ensureServiceUrl, createCommunityAgent, resolvePdsEndpoint, resolveAuth
 import { isAdminInList, getOriginalAdminDid, normalizeAdmins } from '../lib/adminUtils';
 import { encrypt, decryptIfNeeded } from '../lib/crypto';
 import { hasScope, MEMBERSHIP_WRITE_SCOPE, OPENSOCIAL_SCOPES } from '../middleware/auth';
+import { authRateLimiter } from '../middleware/rateLimit';
 import { checkAdmin, seedCollectionPermissions } from '../services/permissions';
 import { createAuditLogService } from '../services/auditLog';
 import { memberRolesCache } from '../lib/cache';
@@ -478,7 +479,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
   });
 
   // Create a new community (requires an existing AT Protocol account)
-  router.post('/users/me/communities', async (req: Request, res: Response) => {
+  router.post('/users/me/communities', authRateLimiter, async (req: Request, res: Response) => {
     try {
       const agent = await getSessionAgent(req, res, oauthClient);
       
@@ -1382,7 +1383,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
   });
 
   // Update community app password (for when the old one is revoked)
-  router.put('/communities/:did/app-password', async (req: Request, res: Response) => {
+  router.put('/communities/:did/app-password', authRateLimiter, async (req: Request, res: Response) => {
     try {
       const agent = await getSessionAgent(req, res, oauthClient);
       if (!agent) {
