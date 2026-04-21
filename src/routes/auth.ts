@@ -2681,5 +2681,710 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
     }
   });
 
+  // ─── Hierarchy routes (session-based, for web UI) ────────────────────
+
+  const HIERARCHY_COLLECTION = 'community.opensocial.hierarchy';
+  const SHARED_CONTENT_COLLECTION = 'community.opensocial.sharedContent';
+
+  /**
+   * Helper: fetch admins list from community's PDS.
+   */
+  async function getHierarchyAdmins(communityAgent: any, communityDid: string): Promise<any[]> {
+    try {
+      const res = await communityAgent.api.com.atproto.repo.getRecord({
+        repo: communityDid,
+        collection: 'community.opensocial.admins',
+        rkey: 'self',
+      });
+      return (res.data.value as any)?.admins || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Helper: check if the session user is an admin of the given community.
+   * Returns the communityAgent on success, or sends a 403 and returns null.
+   */
+  async function requireCommunityAdmin(
+    req: Request,
+    res: Response,
+    communityDid: string,
+    userDid: string,
+  ) {
+    const communityAgent = await createCommunityAgent(db, communityDid);
+    const admins = await getHierarchyAdmins(communityAgent, communityDid);
+    if (!isAdminInList(userDid, admins)) {
+      res.status(403).json({ error: 'Not authorized. Must be a community admin.' });
+      return null;
+    }
+    return communityAgent;
+  }
+
+  // GET /communities/:did/hierarchy — list all hierarchy relationships
+  router.get('/communities/:did/hierarchy', async (req: Request, res: Response) => {
+    try {
+      const communityDid = decodeURIComponent(req.params.did);
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+      const response = await communityAgent.api.com.atproto.repo.listRecords({
+        repo: communityDid,
+        collection: HIERARCHY_COLLECTION,
+        limit: 100,
+      });
+
+      const raw = response.data.records.map((r: any) => ({
+        uri: r.uri,
+        rkey: r.uri.split('/').pop(),
+        role: r.value.role,
+        counterpartyDid: r.value.counterpartyDid,
+        status: r.value.status,
+        requestedBy: r.value.requestedBy,
+        createdAt: r.value.createdAt,
+      }));
+
+      // Enrich with counterparty display info
+      const counterpartyDids = raw.map((r: any) => r.counterpartyDid);
+      const counterpartyRows = counterpartyDids.length > 0
+        ? await db
+            .selectFrom('communities')
+            .select(['did', 'display_name', 'handle', 'avatar_url', 'description'])
+            .where('did', 'in', counterpartyDids)
+            .execute()
+        : [];
+      const counterpartyMap = new Map(counterpartyRows.map((c) => [c.did, c]));
+
+      const relationships = raw.map((r: any) => {
+        const info = counterpartyMap.get(r.counterpartyDid);
+        return {
+          ...r,
+          displayName: info?.display_name ?? null,
+          handle: info?.handle ?? null,
+          avatar: info?.avatar_url ?? null,
+          description: info?.description ?? null,
+        };
+      });
+
+      res.json({ relationships });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error listing hierarchy');
+      res.status(500).json({ error: 'Failed to list hierarchy relationships' });
+    }
+  });
+
+  // GET /communities/:did/hierarchy/pending — incoming pending requests
+  router.get('/communities/:did/hierarchy/pending', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const communityDid = decodeURIComponent(req.params.did);
+      const communityAgent = await requireCommunityAdmin(req, res, communityDid, agent.assertDid);
+      if (!communityAgent) return;
+
+      const rows = await db
+        .selectFrom('pending_hierarchy_requests as p')
+        .innerJoin('communities as c', 'c.did', 'p.requester_did')
+        .select([
+          'p.id',
+          'p.requester_did as requesterDid',
+          'p.target_did as targetDid',
+          'p.requester_role as requesterRole',
+          'p.requester_record_rkey as requesterRecordRkey',
+          'p.admin_did as adminDid',
+          'p.created_at as createdAt',
+          'c.display_name as displayName',
+          'c.handle',
+          'c.avatar_url as avatar',
+          'c.description',
+        ])
+        .where('p.target_did', '=', communityDid)
+        .orderBy('p.created_at', 'desc')
+        .execute();
+
+      res.json({ requests: rows });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error listing pending hierarchy');
+      res.status(500).json({ error: 'Failed to list pending hierarchy requests' });
+    }
+  });
+
+  // GET /communities/:did/hierarchy/content — aggregated child content
+  router.get('/communities/:did/hierarchy/content', async (req: Request, res: Response) => {
+    try {
+      const communityDid = decodeURIComponent(req.params.did);
+      const contentType = req.query.type as string | undefined;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 100);
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const parentAgent = await createCommunityAgent(db, communityDid);
+
+      // Collect approved child DIDs
+      const approvedChildDids: string[] = [];
+      let hierarchyCursor: string | undefined;
+      do {
+        const hierarchyRecords = await parentAgent.api.com.atproto.repo.listRecords({
+          repo: communityDid,
+          collection: HIERARCHY_COLLECTION,
+          limit: 100,
+          cursor: hierarchyCursor,
+        });
+        for (const r of hierarchyRecords.data.records) {
+          const val = r.value as any;
+          if (val.role === 'parent' && val.status === 'approved') {
+            approvedChildDids.push(val.counterpartyDid);
+          }
+        }
+        hierarchyCursor = hierarchyRecords.data.cursor;
+      } while (hierarchyCursor);
+
+      if (approvedChildDids.length === 0) {
+        return res.json({ records: [] });
+      }
+
+      const allRecords: any[] = [];
+      for (const childDid of approvedChildDids) {
+        try {
+          const childCommunity = await db
+            .selectFrom('communities')
+            .selectAll()
+            .where('did', '=', childDid)
+            .executeTakeFirst();
+          if (!childCommunity) continue;
+
+          const childAgent = await createCommunityAgent(db, childDid);
+          const contentResponse = await childAgent.api.com.atproto.repo.listRecords({
+            repo: childDid,
+            collection: SHARED_CONTENT_COLLECTION,
+            limit: Math.min(limit, 100),
+          });
+
+          for (const r of contentResponse.data.records) {
+            const recordType = (r.value as any).type;
+            if (contentType && recordType !== contentType) continue;
+
+            allRecords.push({
+              uri: r.uri,
+              rkey: r.uri.split('/').pop(),
+              sourceCommunityDid: childDid,
+              type: recordType,
+              documentUri: (r.value as any).documentUri,
+              documentCid: (r.value as any).documentCid,
+              sharedBy: (r.value as any).sharedBy,
+              title: (r.value as any).title,
+              path: (r.value as any).path,
+              sharedAt: (r.value as any).sharedAt,
+              ...((r.value as any).startsAt !== undefined ? { startsAt: (r.value as any).startsAt } : {}),
+              ...((r.value as any).endsAt !== undefined ? { endsAt: (r.value as any).endsAt } : {}),
+              ...((r.value as any).location !== undefined ? { location: (r.value as any).location } : {}),
+              ...((r.value as any).mode !== undefined ? { mode: (r.value as any).mode } : {}),
+            });
+          }
+        } catch (childError) {
+          logger.warn({ error: childError, childDid, communityDid }, 'Failed to fetch child content');
+        }
+      }
+
+      allRecords.sort((a, b) => {
+        const aTime = a.sharedAt ? new Date(a.sharedAt).getTime() : 0;
+        const bTime = b.sharedAt ? new Date(b.sharedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+
+      res.json({ records: allRecords.slice(0, limit) });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error fetching hierarchy content');
+      res.status(500).json({ error: 'Failed to fetch hierarchy content' });
+    }
+  });
+
+  // POST /communities/:did/hierarchy/request — child requests parent relationship
+  router.post('/communities/:did/hierarchy/request', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const childDid = decodeURIComponent(req.params.did);
+      const { parentDid } = req.body;
+
+      if (!parentDid) return res.status(400).json({ error: 'parentDid is required' });
+      if (childDid === parentDid) return res.status(400).json({ error: 'A community cannot be its own parent' });
+
+      // Verify both communities exist
+      const [childCommunity, parentCommunity] = await Promise.all([
+        db.selectFrom('communities').selectAll().where('did', '=', childDid).executeTakeFirst(),
+        db.selectFrom('communities').selectAll().where('did', '=', parentDid).executeTakeFirst(),
+      ]);
+      if (!childCommunity) return res.status(404).json({ error: 'Community not found' });
+      if (!parentCommunity) return res.status(404).json({ error: 'Parent community not found' });
+
+      const childAgent = await requireCommunityAdmin(req, res, childDid, agent.assertDid);
+      if (!childAgent) return;
+
+      // Check for existing relationship
+      let cursor: string | undefined;
+      do {
+        const existing = await childAgent.api.com.atproto.repo.listRecords({
+          repo: childDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor,
+        });
+        if (existing.data.records.find((r: any) => r.value.counterpartyDid === parentDid)) {
+          return res.status(409).json({ error: 'A hierarchy relationship with this parent already exists' });
+        }
+        cursor = existing.data.cursor;
+      } while (cursor);
+
+      const response = await childAgent.api.com.atproto.repo.createRecord({
+        repo: childDid,
+        collection: HIERARCHY_COLLECTION,
+        record: {
+          $type: HIERARCHY_COLLECTION,
+          role: 'child',
+          counterpartyDid: parentDid,
+          status: 'pending',
+          requestedBy: agent.assertDid,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      const rkey = response.data.uri.split('/').pop()!;
+      await db
+        .insertInto('pending_hierarchy_requests')
+        .values({
+          requester_did: childDid,
+          target_did: parentDid,
+          requester_role: 'child',
+          requester_record_rkey: rkey,
+          admin_did: agent.assertDid,
+        })
+        .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
+        .execute();
+
+      res.status(201).json({
+        uri: response.data.uri, cid: response.data.cid, rkey, status: 'pending',
+        message: 'Hierarchy request created. Waiting for parent community approval.',
+      });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error requesting hierarchy');
+      res.status(500).json({ error: 'Failed to request hierarchy relationship' });
+    }
+  });
+
+  // POST /communities/:did/hierarchy/invite — parent invites child
+  router.post('/communities/:did/hierarchy/invite', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const parentDid = decodeURIComponent(req.params.did);
+      const { childDid } = req.body;
+
+      if (!childDid) return res.status(400).json({ error: 'childDid is required' });
+      if (parentDid === childDid) return res.status(400).json({ error: 'A community cannot be its own child' });
+
+      const [parentCommunity, childCommunity] = await Promise.all([
+        db.selectFrom('communities').selectAll().where('did', '=', parentDid).executeTakeFirst(),
+        db.selectFrom('communities').selectAll().where('did', '=', childDid).executeTakeFirst(),
+      ]);
+      if (!parentCommunity) return res.status(404).json({ error: 'Community not found' });
+      if (!childCommunity) return res.status(404).json({ error: 'Child community not found' });
+
+      const parentAgent = await requireCommunityAdmin(req, res, parentDid, agent.assertDid);
+      if (!parentAgent) return;
+
+      // Check for existing relationship
+      let cursor: string | undefined;
+      do {
+        const existing = await parentAgent.api.com.atproto.repo.listRecords({
+          repo: parentDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor,
+        });
+        if (existing.data.records.find((r: any) => r.value.counterpartyDid === childDid)) {
+          return res.status(409).json({ error: 'A hierarchy relationship with this child already exists' });
+        }
+        cursor = existing.data.cursor;
+      } while (cursor);
+
+      const response = await parentAgent.api.com.atproto.repo.createRecord({
+        repo: parentDid,
+        collection: HIERARCHY_COLLECTION,
+        record: {
+          $type: HIERARCHY_COLLECTION,
+          role: 'parent',
+          counterpartyDid: childDid,
+          status: 'pending',
+          requestedBy: agent.assertDid,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      const rkey = response.data.uri.split('/').pop()!;
+      await db
+        .insertInto('pending_hierarchy_requests')
+        .values({
+          requester_did: parentDid,
+          target_did: childDid,
+          requester_role: 'parent',
+          requester_record_rkey: rkey,
+          admin_did: agent.assertDid,
+        })
+        .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
+        .execute();
+
+      res.status(201).json({
+        uri: response.data.uri, cid: response.data.cid, rkey, status: 'pending',
+        message: 'Hierarchy invite created. Waiting for child community approval.',
+      });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error inviting child');
+      res.status(500).json({ error: 'Failed to invite child community' });
+    }
+  });
+
+  // POST /communities/:did/hierarchy/approve — parent approves child's request
+  router.post('/communities/:did/hierarchy/approve', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const parentDid = decodeURIComponent(req.params.did);
+      const { childDid } = req.body;
+
+      if (!childDid) return res.status(400).json({ error: 'childDid is required' });
+      if (parentDid === childDid) return res.status(400).json({ error: 'A community cannot be its own child' });
+
+      const [parentCommunity, childCommunity] = await Promise.all([
+        db.selectFrom('communities').selectAll().where('did', '=', parentDid).executeTakeFirst(),
+        db.selectFrom('communities').selectAll().where('did', '=', childDid).executeTakeFirst(),
+      ]);
+      if (!parentCommunity) return res.status(404).json({ error: 'Community not found' });
+      if (!childCommunity) return res.status(404).json({ error: 'Child community not found' });
+
+      const parentAgent = await requireCommunityAdmin(req, res, parentDid, agent.assertDid);
+      if (!parentAgent) return;
+
+      // Check parent doesn't already have a record for this child
+      let pCursor: string | undefined;
+      do {
+        const existing = await parentAgent.api.com.atproto.repo.listRecords({
+          repo: parentDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: pCursor,
+        });
+        if (existing.data.records.find((r: any) => r.value.counterpartyDid === childDid)) {
+          return res.status(409).json({ error: 'This hierarchy relationship has already been approved' });
+        }
+        pCursor = existing.data.cursor;
+      } while (pCursor);
+
+      // Find child's pending request
+      const childAgent = await createCommunityAgent(db, childDid);
+      let childRecordRkey: string | null = null;
+      let childRecordRequestedBy: string = agent.assertDid;
+      let childRecordCreatedAt: string = new Date().toISOString();
+      let cCursor: string | undefined;
+      do {
+        const childRecords = await childAgent.api.com.atproto.repo.listRecords({
+          repo: childDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: cCursor,
+        });
+        const match = childRecords.data.records.find(
+          (r: any) => r.value.counterpartyDid === parentDid && r.value.role === 'child',
+        );
+        if (match) {
+          childRecordRkey = match.uri.split('/').pop() ?? null;
+          childRecordRequestedBy = (match.value as any).requestedBy ?? agent.assertDid;
+          childRecordCreatedAt = (match.value as any).createdAt ?? new Date().toISOString();
+          break;
+        }
+        cCursor = childRecords.data.cursor;
+      } while (cCursor);
+
+      if (!childRecordRkey) {
+        return res.status(404).json({ error: 'No pending hierarchy request found from this child community' });
+      }
+
+      // Update child's record to approved
+      await childAgent.api.com.atproto.repo.putRecord({
+        repo: childDid, collection: HIERARCHY_COLLECTION, rkey: childRecordRkey,
+        record: {
+          $type: HIERARCHY_COLLECTION, role: 'child', counterpartyDid: parentDid,
+          status: 'approved', requestedBy: childRecordRequestedBy, createdAt: childRecordCreatedAt,
+        },
+      });
+
+      // Create parent's approved record
+      const parentResponse = await parentAgent.api.com.atproto.repo.createRecord({
+        repo: parentDid, collection: HIERARCHY_COLLECTION,
+        record: {
+          $type: HIERARCHY_COLLECTION, role: 'parent', counterpartyDid: childDid,
+          status: 'approved', requestedBy: agent.assertDid, createdAt: new Date().toISOString(),
+        },
+      });
+
+      await db
+        .deleteFrom('pending_hierarchy_requests')
+        .where('requester_did', '=', childDid)
+        .where('target_did', '=', parentDid)
+        .execute();
+
+      res.status(201).json({
+        uri: parentResponse.data.uri, cid: parentResponse.data.cid,
+        rkey: parentResponse.data.uri.split('/').pop(),
+        status: 'approved', message: 'Hierarchy relationship approved.',
+      });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error approving hierarchy');
+      res.status(500).json({ error: 'Failed to approve hierarchy relationship' });
+    }
+  });
+
+  // POST /communities/:did/hierarchy/accept — child accepts parent's invite
+  router.post('/communities/:did/hierarchy/accept', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const childDid = decodeURIComponent(req.params.did);
+      const { parentDid } = req.body;
+
+      if (!parentDid) return res.status(400).json({ error: 'parentDid is required' });
+      if (childDid === parentDid) return res.status(400).json({ error: 'A community cannot be its own parent' });
+
+      const [childCommunity, parentCommunity] = await Promise.all([
+        db.selectFrom('communities').selectAll().where('did', '=', childDid).executeTakeFirst(),
+        db.selectFrom('communities').selectAll().where('did', '=', parentDid).executeTakeFirst(),
+      ]);
+      if (!childCommunity) return res.status(404).json({ error: 'Community not found' });
+      if (!parentCommunity) return res.status(404).json({ error: 'Parent community not found' });
+
+      const childAgent = await requireCommunityAdmin(req, res, childDid, agent.assertDid);
+      if (!childAgent) return;
+
+      // Check child doesn't already have a record for this parent
+      let eCursor: string | undefined;
+      do {
+        const existing = await childAgent.api.com.atproto.repo.listRecords({
+          repo: childDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: eCursor,
+        });
+        if (existing.data.records.find((r: any) => r.value.counterpartyDid === parentDid)) {
+          return res.status(409).json({ error: 'A hierarchy relationship with this parent already exists' });
+        }
+        eCursor = existing.data.cursor;
+      } while (eCursor);
+
+      // Find parent's pending invite
+      const parentAgent = await createCommunityAgent(db, parentDid);
+      let parentRecordRkey: string | null = null;
+      let parentRecordRequestedBy: string = agent.assertDid;
+      let parentRecordCreatedAt: string = new Date().toISOString();
+      let pCursor: string | undefined;
+      do {
+        const parentRecords = await parentAgent.api.com.atproto.repo.listRecords({
+          repo: parentDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: pCursor,
+        });
+        const match = parentRecords.data.records.find(
+          (r: any) => r.value.counterpartyDid === childDid && r.value.role === 'parent',
+        );
+        if (match) {
+          parentRecordRkey = match.uri.split('/').pop() ?? null;
+          parentRecordRequestedBy = (match.value as any).requestedBy ?? agent.assertDid;
+          parentRecordCreatedAt = (match.value as any).createdAt ?? new Date().toISOString();
+          break;
+        }
+        pCursor = parentRecords.data.cursor;
+      } while (pCursor);
+
+      if (!parentRecordRkey) {
+        return res.status(404).json({ error: 'No pending hierarchy invite found from this parent community' });
+      }
+
+      // Update parent's record to approved
+      await parentAgent.api.com.atproto.repo.putRecord({
+        repo: parentDid, collection: HIERARCHY_COLLECTION, rkey: parentRecordRkey,
+        record: {
+          $type: HIERARCHY_COLLECTION, role: 'parent', counterpartyDid: childDid,
+          status: 'approved', requestedBy: parentRecordRequestedBy, createdAt: parentRecordCreatedAt,
+        },
+      });
+
+      // Create child's approved record
+      const childResponse = await childAgent.api.com.atproto.repo.createRecord({
+        repo: childDid, collection: HIERARCHY_COLLECTION,
+        record: {
+          $type: HIERARCHY_COLLECTION, role: 'child', counterpartyDid: parentDid,
+          status: 'approved', requestedBy: agent.assertDid, createdAt: new Date().toISOString(),
+        },
+      });
+
+      await db
+        .deleteFrom('pending_hierarchy_requests')
+        .where('requester_did', '=', parentDid)
+        .where('target_did', '=', childDid)
+        .execute();
+
+      res.status(201).json({
+        uri: childResponse.data.uri, cid: childResponse.data.cid,
+        rkey: childResponse.data.uri.split('/').pop(),
+        status: 'approved', message: 'Hierarchy invite accepted.',
+      });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error accepting hierarchy invite');
+      res.status(500).json({ error: 'Failed to accept hierarchy invite' });
+    }
+  });
+
+  // POST /communities/:did/hierarchy/reject — reject incoming request/invite
+  router.post('/communities/:did/hierarchy/reject', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const communityDid = decodeURIComponent(req.params.did);
+      const { counterpartyDid } = req.body;
+
+      if (!counterpartyDid) return res.status(400).json({ error: 'counterpartyDid is required' });
+
+      const community = await db
+        .selectFrom('communities').selectAll()
+        .where('did', '=', communityDid).executeTakeFirst();
+      if (!community) return res.status(404).json({ error: 'Community not found' });
+
+      const communityAgent = await requireCommunityAdmin(req, res, communityDid, agent.assertDid);
+      if (!communityAgent) return;
+
+      const pendingRow = await db
+        .selectFrom('pending_hierarchy_requests')
+        .selectAll()
+        .where('requester_did', '=', counterpartyDid)
+        .where('target_did', '=', communityDid)
+        .executeTakeFirst();
+      if (!pendingRow) {
+        return res.status(404).json({ error: 'No pending hierarchy request found from this community' });
+      }
+
+      // Delete the requester's PDS record (best-effort)
+      try {
+        const counterpartyCommunity = await db
+          .selectFrom('communities').selectAll()
+          .where('did', '=', counterpartyDid).executeTakeFirst();
+        if (counterpartyCommunity) {
+          const counterpartyAgent = await createCommunityAgent(db, counterpartyDid);
+          await counterpartyAgent.api.com.atproto.repo.deleteRecord({
+            repo: counterpartyDid,
+            collection: HIERARCHY_COLLECTION,
+            rkey: pendingRow.requester_record_rkey,
+          });
+        }
+      } catch (deleteError) {
+        logger.warn({ error: deleteError, communityDid, counterpartyDid }, 'Could not remove counterparty hierarchy record on rejection');
+      }
+
+      await db
+        .deleteFrom('pending_hierarchy_requests')
+        .where('id', '=', pendingRow.id)
+        .execute();
+
+      res.json({ success: true, message: 'Hierarchy request rejected' });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error rejecting hierarchy');
+      res.status(500).json({ error: 'Failed to reject hierarchy request' });
+    }
+  });
+
+  // DELETE /communities/:did/hierarchy/:rkey — revoke a hierarchy relationship
+  router.delete('/communities/:did/hierarchy/:rkey', async (req: Request, res: Response) => {
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) return res.status(401).json({ error: 'Not authenticated' });
+
+      const communityDid = decodeURIComponent(req.params.did);
+      const rkey = req.params.rkey;
+
+      const community = await db
+        .selectFrom('communities').selectAll()
+        .where('did', '=', communityDid).executeTakeFirst();
+      if (!community) return res.status(404).json({ error: 'Community not found' });
+
+      const communityAgent = await requireCommunityAdmin(req, res, communityDid, agent.assertDid);
+      if (!communityAgent) return;
+
+      // Fetch the record
+      let hierarchyRecord: any;
+      try {
+        const record = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid, collection: HIERARCHY_COLLECTION, rkey,
+        });
+        hierarchyRecord = record.data.value;
+      } catch {
+        return res.status(404).json({ error: 'Hierarchy record not found' });
+      }
+
+      const counterpartyDid = hierarchyRecord.counterpartyDid;
+
+      // Delete this community's record
+      await communityAgent.api.com.atproto.repo.deleteRecord({
+        repo: communityDid, collection: HIERARCHY_COLLECTION, rkey,
+      });
+
+      // Best-effort: remove counterparty's record
+      try {
+        const counterpartyCommunity = await db
+          .selectFrom('communities').selectAll()
+          .where('did', '=', counterpartyDid).executeTakeFirst();
+        if (counterpartyCommunity) {
+          const counterpartyAgent = await createCommunityAgent(db, counterpartyDid);
+          let cCursor: string | undefined;
+          do {
+            const records = await counterpartyAgent.api.com.atproto.repo.listRecords({
+              repo: counterpartyDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: cCursor,
+            });
+            const match = records.data.records.find((r: any) => r.value.counterpartyDid === communityDid);
+            if (match) {
+              const counterpartyRkey = match.uri.split('/').pop() ?? '';
+              if (counterpartyRkey) {
+                await counterpartyAgent.api.com.atproto.repo.deleteRecord({
+                  repo: counterpartyDid, collection: HIERARCHY_COLLECTION, rkey: counterpartyRkey,
+                });
+              }
+              break;
+            }
+            cCursor = records.data.cursor;
+          } while (cCursor);
+        }
+      } catch (counterpartyError) {
+        logger.warn({ error: counterpartyError, communityDid, counterpartyDid }, 'Could not remove counterparty hierarchy record');
+      }
+
+      // Clean up pending requests
+      await db
+        .deleteFrom('pending_hierarchy_requests')
+        .where((eb) =>
+          eb.or([
+            eb.and([eb('requester_did', '=', communityDid), eb('target_did', '=', counterpartyDid)]),
+            eb.and([eb('requester_did', '=', counterpartyDid), eb('target_did', '=', communityDid)]),
+          ]),
+        )
+        .execute();
+
+      res.json({ success: true, message: 'Hierarchy relationship revoked' });
+    } catch (error) {
+      logger.error({ error, communityDid: req.params.did }, 'Error revoking hierarchy');
+      res.status(500).json({ error: 'Failed to revoke hierarchy relationship' });
+    }
+  });
+
   return router;
 }
