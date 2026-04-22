@@ -2777,7 +2777,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       res.json({ relationships });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error listing hierarchy');
-      res.status(500).json({ error: 'Failed to list hierarchy relationships' });
+      res.status(500).json({ error: 'Failed to list hierarchy relationships', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -2814,7 +2814,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       res.json({ requests: rows });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error listing pending hierarchy');
-      res.status(500).json({ error: 'Failed to list pending hierarchy requests' });
+      res.status(500).json({ error: 'Failed to list pending hierarchy requests', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -2911,7 +2911,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       res.json({ records: allRecords.slice(0, limit) });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error fetching hierarchy content');
-      res.status(500).json({ error: 'Failed to fetch hierarchy content' });
+      res.status(500).json({ error: 'Failed to fetch hierarchy content', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -2984,7 +2984,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error requesting hierarchy');
-      res.status(500).json({ error: 'Failed to request hierarchy relationship' });
+      res.status(500).json({ error: 'Failed to request hierarchy relationship', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -3056,7 +3056,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error inviting child');
-      res.status(500).json({ error: 'Failed to invite child community' });
+      res.status(500).json({ error: 'Failed to invite child community', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -3153,7 +3153,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error approving hierarchy');
-      res.status(500).json({ error: 'Failed to approve hierarchy relationship' });
+      res.status(500).json({ error: 'Failed to approve hierarchy relationship', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -3250,7 +3250,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error accepting hierarchy invite');
-      res.status(500).json({ error: 'Failed to accept hierarchy invite' });
+      res.status(500).json({ error: 'Failed to accept hierarchy invite', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -3310,7 +3310,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       res.json({ success: true, message: 'Hierarchy request rejected' });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error rejecting hierarchy');
-      res.status(500).json({ error: 'Failed to reject hierarchy request' });
+      res.status(500).json({ error: 'Failed to reject hierarchy request', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
@@ -3394,7 +3394,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       res.json({ success: true, message: 'Hierarchy relationship revoked' });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error revoking hierarchy');
-      res.status(500).json({ error: 'Failed to revoke hierarchy relationship' });
+      res.status(500).json({ error: 'Failed to revoke hierarchy relationship', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
