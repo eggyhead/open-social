@@ -149,7 +149,7 @@ async function getSessionAgent(
       const tokenInfo = await oauthSession.getTokenInfo();
       (agent as any).__grantedScope = tokenInfo.scope;
     } catch {
-      // If token info unavailable, scope checks will rely on transition:generic fallback
+      // If token info unavailable, scope checks will be skipped
     }
 
     return agent;

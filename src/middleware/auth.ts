@@ -68,8 +68,7 @@ export function parseScopeString(scope: string): string[] {
  *
  * A required scope like `repo:community.opensocial.membership` is satisfied if:
  * - The exact scope is present, OR
- * - A wildcard scope covering it is present (e.g. `repo:*`), OR
- * - The legacy `transition:generic` scope is present (full access fallback)
+ * - A wildcard scope covering it is present (e.g. `repo:*`)
  *
  * For `repo:` scopes, the collection part is compared. A granted
  * `repo:community.opensocial.*` would NOT match because the AT Proto spec
@@ -77,11 +76,6 @@ export function parseScopeString(scope: string): string[] {
  */
 export function hasScope(grantedScopeString: string, requiredScope: string): boolean {
   const granted = parseScopeString(grantedScopeString);
-
-  // transition:generic is the legacy full-access scope — it satisfies everything
-  if (granted.includes('transition:generic')) {
-    return true;
-  }
 
   // Check for exact match
   if (granted.includes(requiredScope)) {
@@ -105,9 +99,8 @@ export function hasScope(grantedScopeString: string, requiredScope: string): boo
  * The set of OAuth scopes that Open Social requests.
  * - `atproto` — required base scope for all AT Proto OAuth flows
  * - `repo:community.opensocial.membership` — write membership records to user's repo
- * - `transition:generic` — legacy full-access fallback for PDS compatibility
  */
-export const OPENSOCIAL_SCOPES = 'atproto repo:community.opensocial.membership transition:generic';
+export const OPENSOCIAL_SCOPES = 'atproto repo:community.opensocial.membership';
 
 /**
  * The granular scope required to write membership records.
