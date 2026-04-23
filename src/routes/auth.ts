@@ -2715,6 +2715,23 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
     return communityAgent;
   }
 
+  /**
+   * Helper: run a DB operation against pending_hierarchy_requests.
+   * If the table doesn't exist yet (migration 009 not applied), logs a
+   * warning and returns silently so PDS operations aren't blocked.
+   */
+  async function pendingTableOp<T>(operation: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await operation();
+    } catch (err: any) {
+      if (err?.message?.includes('pending_hierarchy_requests') && err?.message?.includes('does not exist')) {
+        logger.warn('pending_hierarchy_requests table does not exist yet — skipping DB operation');
+        return fallback;
+      }
+      throw err;
+    }
+  }
+
   // GET /communities/:did/hierarchy — list all hierarchy relationships
   router.get('/communities/:did/hierarchy', async (req: Request, res: Response) => {
     try {
@@ -2785,7 +2802,8 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       const communityAgent = await requireCommunityAdmin(req, res, communityDid, agent.assertDid);
       if (!communityAgent) return;
 
-      const rows = await db
+      let rows: any[] = [];
+      rows = await pendingTableOp(() => db
         .selectFrom('pending_hierarchy_requests as p')
         .innerJoin('communities as c', 'c.did', 'p.requester_did')
         .select([
@@ -2803,7 +2821,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         ])
         .where('p.target_did', '=', communityDid)
         .orderBy('p.created_at', 'desc')
-        .execute();
+        .execute(), []);
 
       res.json({ requests: rows });
     } catch (error) {
@@ -2958,7 +2976,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
 
       const rkey = response.data.uri.split('/').pop()!;
-      await db
+      await pendingTableOp(() => db
         .insertInto('pending_hierarchy_requests')
         .values({
           requester_did: childDid,
@@ -2968,7 +2986,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           admin_did: agent.assertDid,
         })
         .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid: childDid, adminDid: agent.assertDid, action: 'hierarchy.requested', targetDid: parentDid, metadata: { role: 'child' } });
 
@@ -3030,7 +3048,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       });
 
       const rkey = response.data.uri.split('/').pop()!;
-      await db
+      await pendingTableOp(() => db
         .insertInto('pending_hierarchy_requests')
         .values({
           requester_did: parentDid,
@@ -3040,7 +3058,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
           admin_did: agent.assertDid,
         })
         .onConflict((oc) => oc.columns(['requester_did', 'target_did']).doNothing())
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid: parentDid, adminDid: agent.assertDid, action: 'hierarchy.invited', targetDid: childDid, metadata: { role: 'parent' } });
 
@@ -3132,11 +3150,11 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         },
       });
 
-      await db
+      await pendingTableOp(() => db
         .deleteFrom('pending_hierarchy_requests')
         .where('requester_did', '=', childDid)
         .where('target_did', '=', parentDid)
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid: parentDid, adminDid: agent.assertDid, action: 'hierarchy.approved', targetDid: childDid, metadata: { role: 'parent' } });
 
@@ -3229,11 +3247,11 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         },
       });
 
-      await db
+      await pendingTableOp(() => db
         .deleteFrom('pending_hierarchy_requests')
         .where('requester_did', '=', parentDid)
         .where('target_did', '=', childDid)
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid: childDid, adminDid: agent.assertDid, action: 'hierarchy.accepted', targetDid: parentDid, metadata: { role: 'child' } });
 
@@ -3267,14 +3285,46 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       const communityAgent = await requireCommunityAdmin(req, res, communityDid, agent.assertDid);
       if (!communityAgent) return;
 
-      const pendingRow = await db
+      const pendingRow = await pendingTableOp(() => db
         .selectFrom('pending_hierarchy_requests')
         .selectAll()
         .where('requester_did', '=', counterpartyDid)
         .where('target_did', '=', communityDid)
-        .executeTakeFirst();
+        .executeTakeFirst(), undefined);
+
+      // If the table doesn't exist or no row found, try to find and delete
+      // the counterparty's PDS record directly
       if (!pendingRow) {
-        return res.status(404).json({ error: 'No pending hierarchy request found from this community' });
+        // Attempt to find the counterparty's pending record in their PDS
+        try {
+          const counterpartyCommunity = await db
+            .selectFrom('communities').selectAll()
+            .where('did', '=', counterpartyDid).executeTakeFirst();
+          if (counterpartyCommunity) {
+            const counterpartyAgent = await createCommunityAgent(db, counterpartyDid);
+            let cCursor: string | undefined;
+            do {
+              const records = await counterpartyAgent.api.com.atproto.repo.listRecords({
+                repo: counterpartyDid, collection: HIERARCHY_COLLECTION, limit: 100, cursor: cCursor,
+              });
+              const match = records.data.records.find((r: any) => r.value.counterpartyDid === communityDid && r.value.status === 'pending');
+              if (match) {
+                const matchRkey = match.uri.split('/').pop() ?? '';
+                if (matchRkey) {
+                  await counterpartyAgent.api.com.atproto.repo.deleteRecord({
+                    repo: counterpartyDid, collection: HIERARCHY_COLLECTION, rkey: matchRkey,
+                  });
+                }
+                break;
+              }
+              cCursor = records.data.cursor;
+            } while (cCursor);
+          }
+        } catch (deleteError) {
+          logger.warn({ error: deleteError, communityDid, counterpartyDid }, 'Could not remove counterparty hierarchy record on rejection');
+        }
+        await auditLog.log({ communityDid, adminDid: agent.assertDid, action: 'hierarchy.rejected', targetDid: counterpartyDid });
+        return res.json({ success: true, message: 'Hierarchy request rejected' });
       }
 
       // Delete the requester's PDS record (best-effort)
@@ -3294,10 +3344,10 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         logger.warn({ error: deleteError, communityDid, counterpartyDid }, 'Could not remove counterparty hierarchy record on rejection');
       }
 
-      await db
+      await pendingTableOp(() => db
         .deleteFrom('pending_hierarchy_requests')
         .where('id', '=', pendingRow.id)
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid, adminDid: agent.assertDid, action: 'hierarchy.rejected', targetDid: counterpartyDid });
 
@@ -3373,7 +3423,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
       }
 
       // Clean up pending requests
-      await db
+      await pendingTableOp(() => db
         .deleteFrom('pending_hierarchy_requests')
         .where((eb) =>
           eb.or([
@@ -3381,7 +3431,7 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
             eb.and([eb('requester_did', '=', counterpartyDid), eb('target_did', '=', communityDid)]),
           ]),
         )
-        .execute();
+        .execute(), undefined);
 
       await auditLog.log({ communityDid, adminDid: agent.assertDid, action: 'hierarchy.revoked', targetDid: counterpartyDid, metadata: { role: hierarchyRecord.role } });
 
