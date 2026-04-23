@@ -249,8 +249,10 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
   });
 
   // Login handler
-  router.post('/login', express.urlencoded({ extended: true }), async (req: Request, res: Response) => {
+  router.post('/login', express.json(), express.urlencoded({ extended: true }), async (req: Request, res: Response) => {
     res.setHeader('cache-control', 'no-store');
+
+    const isJsonRequest = req.headers['content-type']?.includes('application/json');
 
     try {
       // Validate input: can be a handle, a DID or a service URL (PDS).
@@ -264,11 +266,18 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         scope: OPENSOCIAL_SCOPES,
       });
 
+      if (isJsonRequest) {
+        return res.json({ redirectUrl: url.toString() });
+      }
       res.redirect(url.toString());
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unexpected error';
       const stack = err instanceof Error ? err.stack : undefined;
       logger.error({ error: message, stack, name: err instanceof Error ? err.name : undefined }, 'OAuth authorize failed');
+
+      if (isJsonRequest) {
+        return res.status(400).json({ error: message });
+      }
       const redirectUrl = config.nodeEnv === 'production'
         ? config.corsOrigin || config.serviceUrl || 'http://127.0.0.1:5174'
         : 'http://127.0.0.1:5174';
