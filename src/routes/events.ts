@@ -69,6 +69,36 @@ function extractEventLocation(locations: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Extract the best external URL from a community.lexicon.calendar.event's uris array.
+ * Prefers URIs named "OpenMeet Event" or similar, then falls back to the first http(s) URI.
+ */
+function extractEventUrl(uris: unknown): string | undefined {
+  if (!Array.isArray(uris) || uris.length === 0) return undefined;
+
+  // Prefer a named event page link (OpenMeet, etc.)
+  const eventPage = uris.find(
+    (u: any) =>
+      typeof u?.uri === 'string' &&
+      u.uri.startsWith('http') &&
+      typeof u?.name === 'string' &&
+      /event/i.test(u.name) &&
+      !/image/i.test(u.name),
+  );
+  if (eventPage) return (eventPage as any).uri;
+
+  // Fallback: first http(s) URI that isn't an image
+  const fallback = uris.find(
+    (u: any) =>
+      typeof u?.uri === 'string' &&
+      u.uri.startsWith('http') &&
+      !/\.(jpg|jpeg|png|gif|webp|svg)(\?|$)/i.test(u.uri),
+  );
+  if (fallback) return (fallback as any).uri;
+
+  return undefined;
+}
+
 export function createEventsRouter(oauthClient: NodeOAuthClient): Router {
   const router = Router();
 
@@ -121,6 +151,7 @@ export function createEventsRouter(oauthClient: NodeOAuthClient): Router {
         mode: parseEventMode(v.mode),
         location: extractEventLocation(v.locations),
         status: (v.status as string) || 'scheduled',
+        eventUrl: extractEventUrl(v.uris),
       });
     } catch (err) {
       logger.error({ error: err }, 'Failed to resolve event');

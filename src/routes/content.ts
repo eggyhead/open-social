@@ -255,8 +255,39 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
         ...(r.value.mode !== undefined ? { mode: r.value.mode } : {}),
       }));
 
+      // Resolve author handles from documentUri DIDs for URL building
+      const authorDids = new Set<string>();
+      for (const r of records) {
+        if (r.documentUri?.startsWith('at://')) {
+          const did = r.documentUri.replace('at://', '').split('/')[0];
+          if (did) authorDids.add(did);
+        }
+      }
+
+      const handleMap = new Map<string, string>();
+      await Promise.all(
+        [...authorDids].map(async (did) => {
+          try {
+            const res = await fetch(
+              `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`,
+            );
+            if (res.ok) {
+              const data = await res.json() as any;
+              if (data.handle) handleMap.set(did, data.handle);
+            }
+          } catch { /* skip unresolvable */ }
+        }),
+      );
+
+      const enrichedRecords = records.map((r: any) => {
+        if (!r.documentUri?.startsWith('at://')) return r;
+        const did = r.documentUri.replace('at://', '').split('/')[0];
+        const authorHandle = did ? handleMap.get(did) ?? null : null;
+        return { ...r, authorHandle };
+      });
+
       res.json({
-        records,
+        records: enrichedRecords,
         cursor: response.data.cursor,
       });
     } catch (error: any) {
