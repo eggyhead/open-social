@@ -1715,13 +1715,6 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         }
       }
 
-      // Filter by DID or handle search
-      if (search) {
-        members = members.filter(
-          (m) => m.did && m.did.toLowerCase().includes(search.toLowerCase())
-        );
-      }
-
       // Resolve Bluesky profiles (handle + avatar) for each member
       const enriched = await Promise.all(
         members.map(async (member) => {
@@ -1731,14 +1724,15 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         })
       );
 
-      // If search term didn't match a DID, also filter by resolved handle
+      // Filter by search term against DID, handle, or display name
       let results = enriched;
       if (search) {
         const lowerSearch = search.toLowerCase();
         results = enriched.filter(
           (m) =>
             (m.did && m.did.toLowerCase().includes(lowerSearch)) ||
-            (m.handle && m.handle.toLowerCase().includes(lowerSearch))
+            (m.handle && m.handle.toLowerCase().includes(lowerSearch)) ||
+            (m.displayName && m.displayName.toLowerCase().includes(lowerSearch))
         );
       }
 
