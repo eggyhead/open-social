@@ -51,8 +51,10 @@ async function getSessionAgent(
 
 const SYSTEM_APP_ID = 'app_system';
 const SHARED_CONTENT_COLLECTION = 'community.opensocial.sharedContent';
+const SHARED_DOCUMENT_COLLECTION = 'community.opensocial.sharedDocument';
+const SHARED_EVENT_COLLECTION = 'community.opensocial.sharedEvent';
 
-// Validation schemas
+// ── Legacy validation schema (keep for backward compat) ─────────────────────
 const shareContentSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('document'),
@@ -74,6 +76,32 @@ const shareContentSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
+// ── New validation schemas ──────────────────────────────────────────────────
+const shareDocumentSchema = z.object({
+  documentUri: z.string().min(1).startsWith('at://'),
+  documentCid: z.string().min(1),
+  title: z.string().min(1).max(512),
+  url: z.string().url(),
+  source: z.string().min(1).max(128),
+  author: z.string().min(1).startsWith('did:'),
+  path: z.string().max(1024).optional(),
+  tags: z.array(z.string().max(128)).max(32).optional(),
+});
+
+const shareEventSchema = z.object({
+  documentUri: z.string().min(1).startsWith('at://'),
+  documentCid: z.string().min(1),
+  title: z.string().min(1).max(512),
+  url: z.string().url(),
+  source: z.string().min(1).max(128),
+  author: z.string().min(1).startsWith('did:'),
+  path: z.string().max(1024).optional(),
+  startsAt: z.string().datetime().optional(),
+  endsAt: z.string().datetime().optional(),
+  location: z.string().max(512).optional(),
+  mode: z.enum(['in-person', 'virtual', 'hybrid']).optional(),
+});
+
 const listContentSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
@@ -92,6 +120,7 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
     communityDid: string,
     userDid: string,
     operation: Operation,
+    collection: string = SHARED_CONTENT_COLLECTION,
   ) {
     // 1. App visibility gate (system app)
     const visibility = await checkAppVisibility(db, communityDid, SYSTEM_APP_ID);
@@ -115,7 +144,7 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
 
     // 3. Collection permission check
     const requiredRole = await getRequiredRole(
-      db, communityDid, SYSTEM_APP_ID, SHARED_CONTENT_COLLECTION, operation,
+      db, communityDid, SYSTEM_APP_ID, collection, operation,
     );
 
     // Fall back to app defaults, then 'member'
@@ -126,7 +155,7 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
         .selectFrom('app_default_permissions')
         .select(col as any)
         .where('app_id', '=', SYSTEM_APP_ID)
-        .where('collection', '=', SHARED_CONTENT_COLLECTION)
+        .where('collection', '=', collection)
         .executeTakeFirst();
       effectiveRequiredRole = appDefault ? (appDefault as any)[col] : 'member';
     }
@@ -450,6 +479,413 @@ export function createContentRouter(oauthClient: NodeOAuthClient, db: Kysely<Dat
     } catch (error: any) {
       logger.error({ error, communityDid, rkey }, 'Error removing shared content');
       res.status(500).json({ error: error.message || 'Failed to remove shared content' });
+    }
+  });
+
+  // ─── Shared helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Check if a documentUri already exists in one or more collections.
+   * Returns true if a duplicate is found.
+   */
+  async function isDuplicateAcrossCollections(
+    communityAgent: any,
+    communityDid: string,
+    documentUri: string,
+    collections: string[],
+  ): Promise<boolean> {
+    for (const collection of collections) {
+      let cursor: string | undefined;
+      do {
+        const existing = await communityAgent.api.com.atproto.repo.listRecords({
+          repo: communityDid,
+          collection,
+          limit: 100,
+          cursor,
+        });
+        const found = existing.data.records.some(
+          (r: any) => r.value.documentUri === documentUri,
+        );
+        if (found) return true;
+        cursor = existing.data.cursor;
+      } while (cursor);
+    }
+    return false;
+  }
+
+  // ─── POST /communities/:did/content/documents ───────────────────────────
+  router.post('/documents', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
+      const parsed = shareDocumentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
+      }
+
+      const { documentUri, documentCid, title, url, source, author, path, tags } = parsed.data;
+
+      const result = await enforceContentPermission(
+        res, communityDid, userDid, 'create', SHARED_DOCUMENT_COLLECTION,
+      );
+      if (!result) return;
+
+      const { communityAgent } = result;
+
+      // Duplicate check across new + legacy collections
+      const duplicate = await isDuplicateAcrossCollections(
+        communityAgent, communityDid, documentUri,
+        [SHARED_DOCUMENT_COLLECTION, SHARED_CONTENT_COLLECTION],
+      );
+      if (duplicate) {
+        return res.status(409).json({ error: 'This document has already been shared with this community' });
+      }
+
+      const response = await communityAgent.api.com.atproto.repo.createRecord({
+        repo: communityDid,
+        collection: SHARED_DOCUMENT_COLLECTION,
+        record: {
+          $type: SHARED_DOCUMENT_COLLECTION,
+          documentUri,
+          documentCid,
+          sharedBy: userDid,
+          title,
+          url,
+          source,
+          author,
+          ...(path ? { path } : {}),
+          ...(tags && tags.length > 0 ? { tags } : {}),
+          sharedAt: new Date().toISOString(),
+        },
+      });
+
+      await webhooks.dispatch('record.created', communityDid, {
+        communityDid,
+        collection: SHARED_DOCUMENT_COLLECTION,
+        uri: response.data.uri,
+        userDid,
+      });
+
+      res.status(201).json({
+        uri: response.data.uri,
+        cid: response.data.cid,
+      });
+    } catch (error: any) {
+      logger.error({ error, communityDid }, 'Error sharing document');
+      res.status(500).json({ error: error.message || 'Failed to share document' });
+    }
+  });
+
+  // ─── POST /communities/:did/content/events ─────────────────────────────
+  router.post('/events', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
+      const parsed = shareEventSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
+      }
+
+      const { documentUri, documentCid, title, url, source, author, path,
+              startsAt, endsAt, location, mode } = parsed.data;
+
+      const result = await enforceContentPermission(
+        res, communityDid, userDid, 'create', SHARED_EVENT_COLLECTION,
+      );
+      if (!result) return;
+
+      const { communityAgent } = result;
+
+      // Duplicate check across new + legacy collections
+      const duplicate = await isDuplicateAcrossCollections(
+        communityAgent, communityDid, documentUri,
+        [SHARED_EVENT_COLLECTION, SHARED_CONTENT_COLLECTION],
+      );
+      if (duplicate) {
+        return res.status(409).json({ error: 'This event has already been shared with this community' });
+      }
+
+      const eventFields: Record<string, string> = {};
+      if (startsAt) eventFields.startsAt = startsAt;
+      if (endsAt) eventFields.endsAt = endsAt;
+      if (location) eventFields.location = location;
+      if (mode) eventFields.mode = mode;
+
+      const response = await communityAgent.api.com.atproto.repo.createRecord({
+        repo: communityDid,
+        collection: SHARED_EVENT_COLLECTION,
+        record: {
+          $type: SHARED_EVENT_COLLECTION,
+          documentUri,
+          documentCid,
+          sharedBy: userDid,
+          title,
+          url,
+          source,
+          author,
+          ...(path ? { path } : {}),
+          ...eventFields,
+          sharedAt: new Date().toISOString(),
+        },
+      });
+
+      await webhooks.dispatch('record.created', communityDid, {
+        communityDid,
+        collection: SHARED_EVENT_COLLECTION,
+        uri: response.data.uri,
+        userDid,
+      });
+
+      res.status(201).json({
+        uri: response.data.uri,
+        cid: response.data.cid,
+      });
+    } catch (error: any) {
+      logger.error({ error, communityDid }, 'Error sharing event');
+      res.status(500).json({ error: error.message || 'Failed to share event' });
+    }
+  });
+
+  // ─── GET /communities/:did/content/documents ─\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  router.get('/documents', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    try {
+      const parsed = listContentSchema.safeParse(req.query);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid query', details: parsed.error.flatten() });
+      }
+
+      const { limit, cursor } = parsed.data;
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+
+      const response = await communityAgent.api.com.atproto.repo.listRecords({
+        repo: communityDid,
+        collection: SHARED_DOCUMENT_COLLECTION,
+        limit,
+        cursor,
+      });
+
+      const records = response.data.records.map((r: any) => ({
+        uri: r.uri,
+        rkey: r.uri.split('/').pop(),
+        documentUri: r.value.documentUri,
+        documentCid: r.value.documentCid,
+        sharedBy: r.value.sharedBy,
+        title: r.value.title,
+        url: r.value.url,
+        source: r.value.source,
+        author: r.value.author,
+        path: r.value.path,
+        tags: r.value.tags,
+        sharedAt: r.value.sharedAt,
+      }));
+
+      res.json({
+        records,
+        cursor: response.data.cursor,
+      });
+    } catch (error: any) {
+      logger.error({ error, communityDid }, 'Error listing shared documents');
+      res.status(500).json({ error: error.message || 'Failed to list shared documents' });
+    }
+  });
+
+  // ─── GET /communities/:did/content/events ───────────────────────────────
+  router.get('/events', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    try {
+      const parsed = listContentSchema.safeParse(req.query);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid query', details: parsed.error.flatten() });
+      }
+
+      const { limit, cursor } = parsed.data;
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+
+      const response = await communityAgent.api.com.atproto.repo.listRecords({
+        repo: communityDid,
+        collection: SHARED_EVENT_COLLECTION,
+        limit,
+        cursor,
+      });
+
+      const records = response.data.records.map((r: any) => ({
+        uri: r.uri,
+        rkey: r.uri.split('/').pop(),
+        documentUri: r.value.documentUri,
+        documentCid: r.value.documentCid,
+        sharedBy: r.value.sharedBy,
+        title: r.value.title,
+        url: r.value.url,
+        source: r.value.source,
+        author: r.value.author,
+        path: r.value.path,
+        startsAt: r.value.startsAt,
+        endsAt: r.value.endsAt,
+        location: r.value.location,
+        mode: r.value.mode,
+        sharedAt: r.value.sharedAt,
+      }));
+
+      res.json({
+        records,
+        cursor: response.data.cursor,
+      });
+    } catch (error: any) {
+      logger.error({ error, communityDid }, 'Error listing shared events');
+      res.status(500).json({ error: error.message || 'Failed to list shared events' });
+    }
+  });
+
+  // ─── DELETE /communities/:did/content/documents/:rkey ───────────────────
+  router.delete('/documents/:rkey', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    const rkey = req.params.rkey;
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+
+      let isOwner = false;
+      try {
+        const record = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: SHARED_DOCUMENT_COLLECTION,
+          rkey,
+        });
+        isOwner = (record.data.value as any).sharedBy === userDid;
+      } catch {
+        return res.status(404).json({ error: 'Shared document not found' });
+      }
+
+      if (!isOwner) {
+        const result = await enforceContentPermission(
+          res, communityDid, userDid, 'delete', SHARED_DOCUMENT_COLLECTION,
+        );
+        if (!result) return;
+      }
+
+      await communityAgent.api.com.atproto.repo.deleteRecord({
+        repo: communityDid,
+        collection: SHARED_DOCUMENT_COLLECTION,
+        rkey,
+      });
+
+      await webhooks.dispatch('record.deleted', communityDid, {
+        communityDid,
+        collection: SHARED_DOCUMENT_COLLECTION,
+        rkey,
+        userDid,
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      logger.error({ error, communityDid, rkey }, 'Error removing shared document');
+      res.status(500).json({ error: error.message || 'Failed to remove shared document' });
+    }
+  });
+
+  // ─── DELETE /communities/:did/content/events/:rkey ──────────────────────
+  router.delete('/events/:rkey', async (req: Request, res: Response) => {
+    const communityDid = decodeURIComponent(req.params.did);
+    const rkey = req.params.rkey;
+    try {
+      const agent = await getSessionAgent(req, res, oauthClient);
+      if (!agent) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const userDid = agent.assertDid;
+
+      const community = await db
+        .selectFrom('communities')
+        .selectAll()
+        .where('did', '=', communityDid)
+        .executeTakeFirst();
+      if (!community) {
+        return res.status(404).json({ error: 'Community not found' });
+      }
+
+      const communityAgent = await createCommunityAgent(db, communityDid);
+
+      let isOwner = false;
+      try {
+        const record = await communityAgent.api.com.atproto.repo.getRecord({
+          repo: communityDid,
+          collection: SHARED_EVENT_COLLECTION,
+          rkey,
+        });
+        isOwner = (record.data.value as any).sharedBy === userDid;
+      } catch {
+        return res.status(404).json({ error: 'Shared event not found' });
+      }
+
+      if (!isOwner) {
+        const result = await enforceContentPermission(
+          res, communityDid, userDid, 'delete', SHARED_EVENT_COLLECTION,
+        );
+        if (!result) return;
+      }
+
+      await communityAgent.api.com.atproto.repo.deleteRecord({
+        repo: communityDid,
+        collection: SHARED_EVENT_COLLECTION,
+        rkey,
+      });
+
+      await webhooks.dispatch('record.deleted', communityDid, {
+        communityDid,
+        collection: SHARED_EVENT_COLLECTION,
+        rkey,
+        userDid,
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      logger.error({ error, communityDid, rkey }, 'Error removing shared event');
+      res.status(500).json({ error: error.message || 'Failed to remove shared event' });
     }
   });
 
