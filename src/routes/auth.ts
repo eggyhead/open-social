@@ -2823,6 +2823,52 @@ export function createAuthRouter(oauthClient: NodeOAuthClient, db: Kysely<Databa
         .orderBy('p.created_at', 'desc')
         .execute(), []);
 
+      // Fallback: if no DB rows, scan other communities' PDS records for
+      // pending hierarchy records that reference this community.
+      if (rows.length === 0) {
+        const otherCommunities = await db
+          .selectFrom('communities')
+          .select(['did', 'display_name', 'handle', 'avatar_url', 'description'])
+          .where('did', '!=', communityDid)
+          .execute();
+
+        for (const other of otherCommunities) {
+          try {
+            const otherAgent = await createCommunityAgent(db, other.did);
+            let scanCursor: string | undefined;
+            do {
+              const records = await otherAgent.api.com.atproto.repo.listRecords({
+                repo: other.did,
+                collection: HIERARCHY_COLLECTION,
+                limit: 100,
+                cursor: scanCursor,
+              });
+              for (const r of records.data.records) {
+                const val = r.value as any;
+                if (val.counterpartyDid === communityDid && val.status === 'pending') {
+                  rows.push({
+                    id: 0,
+                    requesterDid: other.did,
+                    targetDid: communityDid,
+                    requesterRole: val.role,
+                    requesterRecordRkey: r.uri.split('/').pop(),
+                    adminDid: val.requestedBy || other.did,
+                    createdAt: val.createdAt,
+                    displayName: other.display_name,
+                    handle: other.handle,
+                    avatar: other.avatar_url,
+                    description: other.description,
+                  });
+                }
+              }
+              scanCursor = records.data.cursor;
+            } while (scanCursor);
+          } catch (scanErr) {
+            logger.warn({ error: scanErr, otherDid: other.did }, 'Could not scan community for pending hierarchy');
+          }
+        }
+      }
+
       res.json({ requests: rows });
     } catch (error) {
       logger.error({ error, communityDid: req.params.did }, 'Error listing pending hierarchy');
