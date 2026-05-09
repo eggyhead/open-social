@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import http from 'http';
 import { config } from './config';
 import { createDb } from './db';
 import { createOAuthClient } from './auth/client';
@@ -13,6 +14,7 @@ import { createMemberRouter } from './routes/members';
 import { createRecordsRouter } from './routes/records';
 import { createContentRouter } from './routes/content';
 import { createWebhookRouter } from './routes/webhooks';
+import { createStreamRouter } from './routes/stream';
 import { createPermissionsRouter } from './routes/permissions';
 import { createHierarchyRouter } from './routes/hierarchy';
 import { createEventsRouter } from './routes/events';
@@ -21,6 +23,8 @@ import { csrfProtection } from './middleware/csrf';
 import { logger } from './lib/logger';
 import { requestLogger } from './middleware/requestLogger';
 import { validateEnvironment } from './lib/validateEnv';
+import { createEventStreamService } from './services/eventStream';
+import { createEventStream } from './ws/eventStream';
 
 dotenv.config();
 
@@ -111,6 +115,11 @@ async function start() {
     app.use('/api/v1/communities', createPermissionsRouter(db));
     app.use('/api/v1/communities', createHierarchyRouter(db));
     app.use('/api/v1/webhooks', createWebhookRouter(db));
+
+    // Event stream (WebSocket)
+    const eventStreamService = createEventStreamService(db);
+    app.use('/api/v1/stream', createStreamRouter(db, eventStreamService));
+
     app.use('/api/v1/events', createEventsRouter(oauthClient));
 
     // Error handling
@@ -124,11 +133,17 @@ async function start() {
       res.status(500).json({ error: 'Internal server error' });
     });
     
-    app.listen(PORT, () => {
+    const server = http.createServer(app);
+
+    // Attach WebSocket event stream to the HTTP server
+    const eventStream = createEventStream(server, db, eventStreamService);
+
+    server.listen(PORT, () => {
       logger.info({ 
         port: PORT, 
         mode: config.nodeEnv,
         healthCheck: `http://localhost:${PORT}/health`,
+        wsStream: `ws://localhost:${PORT}/api/v1/stream`,
         oauthCallback: config.nodeEnv === 'development' ? `http://127.0.0.1:${PORT}/oauth/callback` : undefined
       }, 'OpenSocial API server started');
     });
