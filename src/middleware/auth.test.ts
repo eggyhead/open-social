@@ -174,4 +174,26 @@ describe('createVerifyApiKey middleware', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.app_data?.app_id).toBe('real');
   });
+
+  it('returns clear error when Signature-Input is present but Signature is missing', async () => {
+    const db = createMockDb();
+    const middleware = createVerifyApiKey(db);
+    const req = {
+      headers: {
+        'signature-input': 'sig1=("@method");keyid="app-1"',
+        // no 'signature' header
+      },
+    } as unknown as AuthenticatedRequest;
+    const json = vi.fn();
+    const res = { status: vi.fn().mockReturnValue({ json }) } as unknown as Response;
+    const next: NextFunction = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Signature-Input header present but Signature header is missing. Both are required.',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 });

@@ -26,14 +26,26 @@ export interface SignatureInput {
 /** Maximum age of a signature before it's considered stale (5 minutes) */
 const MAX_SIGNATURE_AGE_SECONDS = 300;
 
+/** Minimum required components that must be covered by any signature */
+const REQUIRED_COMPONENTS = ['@method'];
+const REQUIRED_BODY_COMPONENTS = ['content-digest'];
+const REQUIRED_PATH_COMPONENTS = ['@path', '@target-uri']; // at least one
+
 /**
- * Parse the Signature-Input header value.
+ * Parse the Signature-Input header value for a single signature entry.
+ *
+ * Rejects multi-entry headers (comma-separated) to avoid ambiguity.
  *
  * Format: sig1=("@method" "@target-uri" "content-digest" "date");
  *         created=1733000000;keyid="app_abc";alg="ecdsa-p256-sha256"
  */
 export function parseSignatureInput(input: string): SignatureInput | null {
   try {
+    // Reject multi-entry Signature-Input headers
+    if (input.includes(',') && /,\s*\w+=\(/.test(input)) {
+      return null;
+    }
+
     // Extract the component list between ( and ) without regex to avoid ReDoS
     const openParen = input.indexOf('(');
     const closeParen = input.indexOf(')');
@@ -101,8 +113,9 @@ export function buildSignatureBase(req: Request, sigInput: SignatureInput, rawIn
   }
 
   // Append the @signature-params component
-  // Extract just the signature parameters portion (everything after sig label)
-  const sigParamsValue = rawInputStr.replace(/^\w+=/, '');
+  // Extract params portion after the first '=' (label can contain hyphens per RFC 9421)
+  const eqIdx = rawInputStr.indexOf('=');
+  const sigParamsValue = eqIdx !== -1 ? rawInputStr.slice(eqIdx + 1) : rawInputStr;
   lines.push(`"@signature-params": ${sigParamsValue}`);
 
   return lines.join('\n');
@@ -136,15 +149,37 @@ export function verifyRequestSignature(
     return { valid: false, error: 'Malformed Signature-Input header' };
   }
 
-  // Check signature age
+  // Require `created` timestamp for replay protection
   const created = sigInput.params.created;
-  if (typeof created === 'number') {
-    const age = Math.floor(Date.now() / 1000) - created;
-    if (age > MAX_SIGNATURE_AGE_SECONDS) {
-      return { valid: false, error: `Signature too old (${age}s)` };
+  if (typeof created !== 'number') {
+    return { valid: false, error: 'Missing required "created" parameter in Signature-Input' };
+  }
+
+  // Check signature age
+  const age = Math.floor(Date.now() / 1000) - created;
+  if (age > MAX_SIGNATURE_AGE_SECONDS) {
+    return { valid: false, error: `Signature too old (${age}s)` };
+  }
+  if (age < -30) {
+    return { valid: false, error: 'Signature created in the future' };
+  }
+
+  // Enforce minimum required components
+  const components = sigInput.components;
+  for (const req_comp of REQUIRED_COMPONENTS) {
+    if (!components.includes(req_comp)) {
+      return { valid: false, error: `Signature must cover "${req_comp}"` };
     }
-    if (age < -30) {
-      return { valid: false, error: 'Signature created in the future' };
+  }
+  if (!REQUIRED_PATH_COMPONENTS.some((c) => components.includes(c))) {
+    return { valid: false, error: 'Signature must cover "@path" or "@target-uri"' };
+  }
+  // Require content-digest for requests that may have a body
+  if (['POST', 'PUT', 'PATCH'].includes(req.method.toUpperCase())) {
+    for (const req_comp of REQUIRED_BODY_COMPONENTS) {
+      if (!components.includes(req_comp)) {
+        return { valid: false, error: `Signature on ${req.method} must cover "${req_comp}"` };
+      }
     }
   }
 

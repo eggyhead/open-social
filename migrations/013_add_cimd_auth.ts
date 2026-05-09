@@ -1,4 +1,4 @@
-import { Kysely, sql } from 'kysely';
+import { Kysely } from 'kysely';
 
 /**
  * Migration: Add CIMD (Client ID Metadata Document) support to the apps table.

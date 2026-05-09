@@ -8,7 +8,7 @@ import { config } from '../config';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { hashApiKey, verifyApiKey } from '../lib/crypto';
-import { getCimdDocument, jwkToKeyObject } from '../lib/cimd';
+import { getCimdDocument, jwkToKeyObject, invalidateCimdCache } from '../lib/cimd';
 import { verifyRequestSignature } from '../lib/httpSig';
 import { registerAppWithPermissionsSchema, updateAppSchema, appDefaultPermissionSchema } from '../validation/schemas';
 import { logger } from '../lib/logger';
@@ -72,15 +72,19 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
       // Validate CIMD document is reachable when using HTTP signature auth
       if (cimdUrl && (effectiveAuthMethod === 'http_signature' || effectiveAuthMethod === 'both')) {
         try {
+          // Try GET with bounded response (HEAD may not be supported on all hosts)
           const probe = await fetch(cimdUrl, {
-            method: 'HEAD',
+            method: 'GET',
             signal: AbortSignal.timeout(5000),
+            headers: { Accept: 'application/json' },
           });
           if (!probe.ok) {
             return res.status(400).json({
               error: `CIMD document not reachable at ${cimdUrl} (HTTP ${probe.status}). Publish your document before registering.`,
             });
           }
+          // Consume body to free resources
+          await probe.text();
         } catch (err) {
           return res.status(400).json({
             error: `Could not reach CIMD document at ${cimdUrl}. Ensure the URL is publicly accessible.`,
@@ -406,7 +410,17 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
       }
 
       const publicKey = jwkToKeyObject(cimd.publicKeyJwk);
-      const result = verifyRequestSignature(req as any, publicKey);
+      let result = verifyRequestSignature(req as any, publicKey);
+
+      // Retry once on failure (key rotation — same as auth middleware)
+      if (!result.valid) {
+        invalidateCimdCache(app.domain);
+        const freshCimd = await getCimdDocument(app.domain, true, app.cimd_url);
+        if (freshCimd) {
+          const freshKey = jwkToKeyObject(freshCimd.publicKeyJwk);
+          result = verifyRequestSignature(req as any, freshKey);
+        }
+      }
 
       if (!result.valid) {
         return res.status(401).json({ error: result.error || 'Signature verification failed' });

@@ -3,7 +3,7 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { hashApiKey, verifyApiKey as verifyApiKeyHash } from '../lib/crypto';
 import { getCimdDocument, invalidateCimdCache, jwkToKeyObject } from '../lib/cimd';
-import { verifyRequestSignature } from '../lib/httpSig';
+import { verifyRequestSignature, parseSignatureInput } from '../lib/httpSig';
 import { logger } from '../lib/logger';
 
 export interface AuthenticatedRequest extends Request {
@@ -33,6 +33,11 @@ export function createVerifyApiKey(db: Kysely<Database>) {
     // Try HTTP Message Signature auth first if headers are present
     if (signatureInput && req.headers['signature']) {
       return verifyHttpSignature(req, res, next, db);
+    }
+
+    // Detect malformed signature attempt (input without signature)
+    if (signatureInput && !req.headers['signature']) {
+      return res.status(401).json({ error: 'Signature-Input header present but Signature header is missing. Both are required.' });
     }
 
     // Fall back to API key auth
@@ -87,12 +92,15 @@ async function verifyHttpSignature(
   try {
     const signatureInput = req.headers['signature-input'] as string;
 
-    // Extract keyid from signature input — this identifies the app
-    const keyIdMatch = signatureInput.match(/keyid="([^"]*)"/);
-    if (!keyIdMatch) {
+    // Use the shared parser to extract keyid (avoids duplicating regex logic)
+    const parsed = parseSignatureInput(signatureInput);
+    if (!parsed) {
+      return res.status(401).json({ error: 'Malformed Signature-Input header' });
+    }
+    const keyId = parsed.params.keyid as string | undefined;
+    if (!keyId) {
       return res.status(401).json({ error: 'Missing keyid in Signature-Input' });
     }
-    const keyId = keyIdMatch[1];
 
     // Look up the app by app_id or domain
     const app = await db

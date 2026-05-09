@@ -43,9 +43,38 @@ export interface JsonWebKey {
 }
 
 /**
+ * Validate that a URL is safe to fetch (SSRF protection).
+ * - Must be https
+ * - Must not target localhost, private IPs, or link-local addresses
+ */
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+
+    const hostname = parsed.hostname.toLowerCase();
+    // Block localhost
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return false;
+    // Block private IP ranges
+    if (/^10\./.test(hostname)) return false;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return false;
+    if (/^192\.168\./.test(hostname)) return false;
+    // Block link-local
+    if (/^169\.254\./.test(hostname)) return false;
+    if (hostname.startsWith('fe80:')) return false;
+    // Block 0.0.0.0
+    if (hostname === '0.0.0.0') return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Fetch a CIMD document from the app's domain or a custom URL.
  *
- * When `cimdUrl` is provided, fetches from that URL directly.
+ * When `cimdUrl` is provided, validates it for SSRF safety then fetches directly.
  * Otherwise tries two well-known locations:
  * 1. https://{domain}/.well-known/client-metadata.json (CIMD)
  * 2. https://{domain}/.well-known/did.json (did:web)
@@ -54,22 +83,26 @@ export async function fetchCimdDocument(
   domain: string,
   cimdUrl?: string | null,
 ): Promise<CimdDocument | null> {
-  // If a custom CIMD URL is provided, try it first
   const urlsToTry: Array<{ url: string; type: 'cimd' | 'did' }> = [];
 
   if (cimdUrl) {
-    // Determine type based on URL path
+    if (!isSafeUrl(cimdUrl)) {
+      logger.warn({ domain, cimdUrl }, 'Rejecting unsafe CIMD URL');
+      return null;
+    }
     const isDid = cimdUrl.includes('did.json');
     urlsToTry.push({ url: cimdUrl, type: isDid ? 'did' : 'cimd' });
   }
 
-  // Always add well-known fallbacks
+  // Well-known fallbacks are always https://{domain}/...
   urlsToTry.push(
     { url: `https://${domain}/.well-known/client-metadata.json`, type: 'cimd' },
     { url: `https://${domain}/.well-known/did.json`, type: 'did' },
   );
 
   for (const { url, type } of urlsToTry) {
+    if (!isSafeUrl(url)) continue;
+
     try {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(5000),
