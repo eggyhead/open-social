@@ -60,7 +60,13 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
       if (!parsed.success) {
         return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
       }
-      const { name, domain, defaultPermissions } = parsed.data;
+      const { name, domain, defaultPermissions, authMethod, cimdUrl } = parsed.data;
+
+      // If using HTTP signature auth, validate CIMD URL is reachable
+      const effectiveAuthMethod = authMethod || 'api_key';
+      if ((effectiveAuthMethod === 'http_signature' || effectiveAuthMethod === 'both') && !cimdUrl) {
+        return res.status(400).json({ error: 'cimdUrl is required when using http_signature auth' });
+      }
 
       // Check for duplicate domain
       const existing = await db
@@ -75,7 +81,9 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
 
       const creatorDid = agent.assertDid;
       const appId = `app_${crypto.randomBytes(8).toString('hex')}`;
-      const apiKey = `osc_${crypto.randomBytes(32).toString('hex')}`;
+      // Only generate API key if auth method includes api_key
+      const needsApiKey = effectiveAuthMethod !== 'http_signature';
+      const apiKey = needsApiKey ? `osc_${crypto.randomBytes(32).toString('hex')}` : null;
 
       await db
         .insertInto('apps')
@@ -84,7 +92,9 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
           name,
           domain,
           creator_did: creatorDid,
-          api_key: hashApiKey(apiKey),
+          api_key: needsApiKey ? hashApiKey(apiKey!) : 'CIMD_AUTH_ONLY',
+          auth_method: effectiveAuthMethod,
+          cimd_url: cimdUrl || null,
           created_at: new Date(),
           updated_at: new Date(),
           status: 'active',
@@ -108,16 +118,24 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
         }
       }
 
-      return res.json({
+      const response: Record<string, any> = {
         app: {
           app_id: appId,
           name,
           domain,
-          api_key: apiKey,
+          auth_method: effectiveAuthMethod,
+          ...(cimdUrl && { cimd_url: cimdUrl }),
+          ...(apiKey && { api_key: apiKey }),
           created_at: new Date().toISOString(),
         },
-        message: 'Store the api_key securely — treat it like a password.',
-      });
+      };
+      if (apiKey) {
+        response.message = 'Store the api_key securely — treat it like a password.';
+      } else {
+        response.message = 'App registered with HTTP signature auth. Publish your CIMD document at your domain.';
+      }
+
+      return res.json(response);
     } catch (err) {
       logger.error({ error: err }, 'Error registering app');
       return res.status(500).json({ error: 'Failed to register app' });
@@ -134,7 +152,7 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
 
       const apps = await db
         .selectFrom('apps')
-        .select(['app_id', 'name', 'domain', 'status', 'created_at', 'updated_at'])
+        .select(['app_id', 'name', 'domain', 'auth_method', 'cimd_url', 'status', 'created_at', 'updated_at'])
         .where('creator_did', '=', agent.assertDid)
         .orderBy('created_at', 'desc')
         .execute();
@@ -156,7 +174,7 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
 
       const app = await db
         .selectFrom('apps')
-        .select(['app_id', 'name', 'domain', 'status', 'created_at', 'updated_at'])
+        .select(['app_id', 'name', 'domain', 'auth_method', 'cimd_url', 'status', 'created_at', 'updated_at'])
         .where('app_id', '=', req.params.appId)
         .where('creator_did', '=', agent.assertDid)
         .executeTakeFirst();
@@ -294,38 +312,71 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
     }
   });
 
-  // Verify API key (for external apps to test credentials)
+  // Verify credentials (API key or HTTP signature)
   router.post('/verify', async (req: Request, res: Response) => {
     try {
       const apiKey = req.headers['x-api-key'] as string;
+      const signatureInput = req.headers['signature-input'] as string;
 
-      if (!apiKey) {
-        return res.status(401).json({ error: 'API key required (X-Api-Key header)' });
+      if (!apiKey && !signatureInput) {
+        return res.status(401).json({ error: 'API key (X-Api-Key header) or HTTP signature required' });
       }
 
-      // API key hashes use scrypt with a per-key random salt, so we can't
-      // look up the app directly by hash. Fetch all active apps with a key
-      // and find the one whose stored hash matches the supplied key.
-      const apps = await db
+      if (apiKey) {
+        // API key verification path
+        const apps = await db
+          .selectFrom('apps')
+          .selectAll()
+          .where('status', '=', 'active')
+          .where('api_key', 'is not', null)
+          .execute();
+
+        const app = apps.find((candidate) => verifyApiKey(apiKey, candidate.api_key));
+
+        if (!app) {
+          return res.status(401).json({ error: 'Invalid API key' });
+        }
+
+        return res.json({
+          valid: true,
+          auth_method: 'api_key',
+          app: {
+            appId: app.app_id,
+            name: app.name,
+            domain: app.domain,
+          },
+        });
+      }
+
+      // HTTP signature verification path
+      const keyIdMatch = signatureInput.match(/keyid="([^"]*)"/);
+      if (!keyIdMatch) {
+        return res.status(401).json({ error: 'Missing keyid in Signature-Input' });
+      }
+
+      const app = await db
         .selectFrom('apps')
         .selectAll()
         .where('status', '=', 'active')
-        .where('api_key', 'is not', null)
-        .execute();
-
-      const app = apps.find((candidate) => verifyApiKey(apiKey, candidate.api_key));
+        .where((eb) => eb.or([
+          eb('app_id', '=', keyIdMatch[1]),
+          eb('domain', '=', keyIdMatch[1]),
+        ]))
+        .executeTakeFirst();
 
       if (!app) {
-        return res.status(401).json({ error: 'Invalid API key' });
+        return res.status(401).json({ error: 'Unknown app' });
       }
 
       return res.json({
         valid: true,
+        auth_method: 'http_signature',
         app: {
           appId: app.app_id,
           name: app.name,
           domain: app.domain,
         },
+        note: 'Signature presence verified. Full signature verification happens in the auth middleware.',
       });
     } catch (err) {
       logger.error({ error: err }, 'Error verifying credentials');

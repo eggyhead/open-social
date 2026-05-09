@@ -17,6 +17,8 @@ export const nsidSchema = z.string().min(1, 'Collection is required').refine(
 export const registerAppSchema = z.object({
   name: z.string().min(3).max(100).regex(/^[a-zA-Z0-9\s\-_]+$/, 'Name must be alphanumeric with spaces, hyphens, or underscores'),
   domain: z.string().min(1).regex(/^[a-zA-Z0-9][a-zA-Z0-9\-.]+\.[a-zA-Z]{2,}$/, 'Invalid domain format'),
+  authMethod: z.enum(['api_key', 'http_signature', 'both']).optional(),
+  cimdUrl: z.string().url().max(500).optional(),
 });
 
 export const updateAppSchema = z.object({
