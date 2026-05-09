@@ -51,7 +51,10 @@ export function createVerifyApiKey(db: Kysely<Database>) {
         .where('api_key', 'is not', null)
         .execute();
 
-      const app = apps.find((candidate) => verifyApiKeyHash(apiKey, candidate.api_key));
+      const app = apps.find((candidate) => {
+        if (candidate.auth_method === 'http_signature') return false; // API key not allowed
+        return verifyApiKeyHash(apiKey, candidate.api_key);
+      });
 
       if (!app) {
         return res.status(401).json({ error: 'Invalid API key' });
@@ -106,8 +109,13 @@ async function verifyHttpSignature(
       return res.status(401).json({ error: 'Unknown app' });
     }
 
-    // Fetch CIMD document for the app's domain
-    const cimd = await getCimdDocument(app.domain);
+    // Ensure this app is configured for HTTP signature auth
+    if (app.auth_method !== 'http_signature' && app.auth_method !== 'both') {
+      return res.status(401).json({ error: 'This app is not configured for HTTP signature auth' });
+    }
+
+    // Fetch CIMD document, using app's cimd_url if set
+    const cimd = await getCimdDocument(app.domain, false, app.cimd_url);
     if (!cimd) {
       return res.status(401).json({ error: 'Could not fetch client identity document' });
     }
@@ -118,7 +126,7 @@ async function verifyHttpSignature(
     // If verification fails, maybe the key rotated — refetch and retry once
     if (!result.valid) {
       invalidateCimdCache(app.domain);
-      const freshCimd = await getCimdDocument(app.domain, true);
+      const freshCimd = await getCimdDocument(app.domain, true, app.cimd_url);
       if (freshCimd) {
         const freshKey = jwkToKeyObject(freshCimd.publicKeyJwk);
         result = verifyRequestSignature(req, freshKey);

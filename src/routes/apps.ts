@@ -8,6 +8,8 @@ import { config } from '../config';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { hashApiKey, verifyApiKey } from '../lib/crypto';
+import { getCimdDocument, jwkToKeyObject } from '../lib/cimd';
+import { verifyRequestSignature } from '../lib/httpSig';
 import { registerAppWithPermissionsSchema, updateAppSchema, appDefaultPermissionSchema } from '../validation/schemas';
 import { logger } from '../lib/logger';
 
@@ -62,10 +64,28 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
       }
       const { name, domain, defaultPermissions, authMethod, cimdUrl } = parsed.data;
 
-      // If using HTTP signature auth, validate CIMD URL is reachable
       const effectiveAuthMethod = authMethod || 'api_key';
       if ((effectiveAuthMethod === 'http_signature' || effectiveAuthMethod === 'both') && !cimdUrl) {
         return res.status(400).json({ error: 'cimdUrl is required when using http_signature auth' });
+      }
+
+      // Validate CIMD document is reachable when using HTTP signature auth
+      if (cimdUrl && (effectiveAuthMethod === 'http_signature' || effectiveAuthMethod === 'both')) {
+        try {
+          const probe = await fetch(cimdUrl, {
+            method: 'HEAD',
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!probe.ok) {
+            return res.status(400).json({
+              error: `CIMD document not reachable at ${cimdUrl} (HTTP ${probe.status}). Publish your document before registering.`,
+            });
+          }
+        } catch (err) {
+          return res.status(400).json({
+            error: `Could not reach CIMD document at ${cimdUrl}. Ensure the URL is publicly accessible.`,
+          });
+        }
       }
 
       // Check for duplicate domain
@@ -84,6 +104,10 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
       // Only generate API key if auth method includes api_key
       const needsApiKey = effectiveAuthMethod !== 'http_signature';
       const apiKey = needsApiKey ? `osc_${crypto.randomBytes(32).toString('hex')}` : null;
+      // For http_signature-only apps, store a unique random hash to satisfy NOT NULL + UNIQUE
+      const apiKeyHash = needsApiKey
+        ? hashApiKey(apiKey!)
+        : `nosecret_${crypto.randomBytes(32).toString('hex')}`;
 
       await db
         .insertInto('apps')
@@ -92,7 +116,7 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
           name,
           domain,
           creator_did: creatorDid,
-          api_key: needsApiKey ? hashApiKey(apiKey!) : 'CIMD_AUTH_ONLY',
+          api_key: apiKeyHash,
           auth_method: effectiveAuthMethod,
           cimd_url: cimdUrl || null,
           created_at: new Date(),
@@ -348,7 +372,11 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
         });
       }
 
-      // HTTP signature verification path
+      // HTTP signature verification path — perform full verification
+      if (!req.headers['signature']) {
+        return res.status(401).json({ error: 'Both Signature and Signature-Input headers are required' });
+      }
+
       const keyIdMatch = signatureInput.match(/keyid="([^"]*)"/);
       if (!keyIdMatch) {
         return res.status(401).json({ error: 'Missing keyid in Signature-Input' });
@@ -368,6 +396,22 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
         return res.status(401).json({ error: 'Unknown app' });
       }
 
+      if (app.auth_method !== 'http_signature' && app.auth_method !== 'both') {
+        return res.status(401).json({ error: 'This app is not configured for HTTP signature auth' });
+      }
+
+      const cimd = await getCimdDocument(app.domain, false, app.cimd_url);
+      if (!cimd) {
+        return res.status(401).json({ error: 'Could not fetch client identity document' });
+      }
+
+      const publicKey = jwkToKeyObject(cimd.publicKeyJwk);
+      const result = verifyRequestSignature(req as any, publicKey);
+
+      if (!result.valid) {
+        return res.status(401).json({ error: result.error || 'Signature verification failed' });
+      }
+
       return res.json({
         valid: true,
         auth_method: 'http_signature',
@@ -376,7 +420,6 @@ export function createAppRouter(oauthClient: NodeOAuthClient, db: Kysely<Databas
           name: app.name,
           domain: app.domain,
         },
-        note: 'Signature presence verified. Full signature verification happens in the auth middleware.',
       });
     } catch (err) {
       logger.error({ error: err }, 'Error verifying credentials');

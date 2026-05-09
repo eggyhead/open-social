@@ -154,3 +154,60 @@ describe('jwkToKeyObject', () => {
     expect(keyObj.asymmetricKeyType).toBe('rsa');
   });
 });
+
+describe('DID verification relationship filtering', () => {
+  it('only accepts keys referenced by authentication relationship', async () => {
+    const otherKeyPair = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const otherJwk = otherKeyPair.publicKey.export({ format: 'jwk' });
+
+    // CIMD fetch fails
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    // did:web has two keys, only one in authentication
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: 'did:web:secure.example.com',
+        verificationMethod: [
+          {
+            id: 'did:web:secure.example.com#wrong-key',
+            type: 'JsonWebKey2020',
+            publicKeyJwk: otherJwk,
+          },
+          {
+            id: 'did:web:secure.example.com#auth-key',
+            type: 'JsonWebKey2020',
+            publicKeyJwk: testPublicJwk,
+          },
+        ],
+        authentication: ['did:web:secure.example.com#auth-key'],
+      }),
+    });
+
+    const doc = await fetchCimdDocument('secure.example.com');
+    expect(doc).not.toBeNull();
+    // Should pick the auth-key, not the wrong-key
+    expect(doc!.publicKeyJwk).toEqual(testPublicJwk);
+  });
+
+  it('rejects keys not referenced by any verification relationship', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: 'did:web:strict.example.com',
+        verificationMethod: [
+          {
+            id: 'did:web:strict.example.com#unused-key',
+            type: 'JsonWebKey2020',
+            publicKeyJwk: testPublicJwk,
+          },
+        ],
+        // authentication references a different key that doesn't exist
+        authentication: ['did:web:strict.example.com#other-key'],
+      }),
+    });
+
+    const doc = await fetchCimdDocument('strict.example.com');
+    expect(doc).toBeNull();
+  });
+});

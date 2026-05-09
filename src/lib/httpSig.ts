@@ -158,15 +158,11 @@ export function verifyRequestSignature(
   }
   const signatureBytes = Buffer.from(sigMatch[1], 'base64');
 
-  // Determine algorithm from params or key
   const algParam = sigInput.params.alg as string | undefined;
-  const nodeAlg = mapAlgorithm(algParam, publicKey);
 
-  // Verify
+  // Verify using algorithm-appropriate crypto
   try {
-    const verifier = crypto.createVerify(nodeAlg);
-    verifier.update(signatureBase);
-    const valid = verifier.verify(publicKey, signatureBytes);
+    const valid = verifySignatureBytes(signatureBase, signatureBytes, publicKey, algParam);
 
     return {
       valid,
@@ -180,24 +176,42 @@ export function verifyRequestSignature(
 }
 
 /**
- * Map an HTTP Message Signatures algorithm identifier to a Node.js algorithm.
+ * Verify a signature using the correct crypto API for each key type.
+ *
+ * - ECDSA (P-256): crypto.createVerify('SHA256')
+ * - RSA-PSS: crypto.verify with PSS padding + salt length
+ * - Ed25519: crypto.verify(null, ...) — Ed25519 has a built-in hash
  */
-function mapAlgorithm(alg: string | undefined, key: crypto.KeyObject): string {
-  if (alg) {
-    const map: Record<string, string> = {
-      'ecdsa-p256-sha256': 'SHA256',
-      'rsa-pss-sha256': 'SHA256',
-      'rsa-v1_5-sha256': 'SHA256',
-      'ed25519': 'ed25519',
-    };
-    if (map[alg]) return map[alg];
+function verifySignatureBytes(
+  data: string,
+  signature: Buffer,
+  publicKey: crypto.KeyObject,
+  algParam?: string
+): boolean {
+  const keyType = publicKey.asymmetricKeyType;
+  const dataBuffer = Buffer.from(data);
+
+  if (keyType === 'ed25519') {
+    return crypto.verify(null, dataBuffer, publicKey, signature);
   }
 
-  // Infer from key type
-  const keyType = key.asymmetricKeyType;
-  if (keyType === 'ec') return 'SHA256';
-  if (keyType === 'rsa' || keyType === 'rsa-pss') return 'SHA256';
-  if (keyType === 'ed25519') return 'ed25519';
+  if (keyType === 'rsa-pss' || algParam === 'rsa-pss-sha256') {
+    return crypto.verify(
+      'sha256',
+      dataBuffer,
+      {
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: crypto.constants.RSA_PSS_SALTLEN_AUTO,
+      },
+      signature
+    );
+  }
 
-  return 'SHA256';
+  // ECDSA or RSA PKCS#1 v1.5
+  const verifier = crypto.createVerify('SHA256');
+  verifier.update(data);
+  return verifier.verify(publicKey, signature);
 }
+
+

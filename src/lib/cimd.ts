@@ -43,57 +43,58 @@ export interface JsonWebKey {
 }
 
 /**
- * Fetch a CIMD document from the app's domain.
+ * Fetch a CIMD document from the app's domain or a custom URL.
  *
- * Tries two well-known locations:
+ * When `cimdUrl` is provided, fetches from that URL directly.
+ * Otherwise tries two well-known locations:
  * 1. https://{domain}/.well-known/client-metadata.json (CIMD)
  * 2. https://{domain}/.well-known/did.json (did:web)
  */
-export async function fetchCimdDocument(domain: string): Promise<CimdDocument | null> {
-  // Try CIMD first
-  const cimdUrl = `https://${domain}/.well-known/client-metadata.json`;
-  try {
-    const res = await fetch(cimdUrl, {
-      signal: AbortSignal.timeout(5000),
-      headers: { Accept: 'application/json' },
-    });
+export async function fetchCimdDocument(
+  domain: string,
+  cimdUrl?: string | null,
+): Promise<CimdDocument | null> {
+  // If a custom CIMD URL is provided, try it first
+  const urlsToTry: Array<{ url: string; type: 'cimd' | 'did' }> = [];
 
-    if (res.ok) {
-      const doc = await res.json() as Record<string, any>;
-      const jwk = extractPublicKeyFromCimd(doc);
-      if (jwk) {
-        return {
-          clientId: doc.client_id || `https://${domain}`,
-          publicKeyJwk: jwk,
-          fetchedAt: Date.now(),
-        };
-      }
-    }
-  } catch (err) {
-    logger.debug({ domain, err }, 'CIMD fetch failed, trying did:web');
+  if (cimdUrl) {
+    // Determine type based on URL path
+    const isDid = cimdUrl.includes('did.json');
+    urlsToTry.push({ url: cimdUrl, type: isDid ? 'did' : 'cimd' });
   }
 
-  // Fall back to did:web
-  const didUrl = `https://${domain}/.well-known/did.json`;
-  try {
-    const res = await fetch(didUrl, {
-      signal: AbortSignal.timeout(5000),
-      headers: { Accept: 'application/json' },
-    });
+  // Always add well-known fallbacks
+  urlsToTry.push(
+    { url: `https://${domain}/.well-known/client-metadata.json`, type: 'cimd' },
+    { url: `https://${domain}/.well-known/did.json`, type: 'did' },
+  );
 
-    if (res.ok) {
+  for (const { url, type } of urlsToTry) {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!res.ok) continue;
+
       const doc = await res.json() as Record<string, any>;
-      const jwk = extractPublicKeyFromDidDoc(doc);
+      const jwk = type === 'cimd'
+        ? extractPublicKeyFromCimd(doc)
+        : extractPublicKeyFromDidDoc(doc);
+
       if (jwk) {
         return {
-          clientId: doc.id || `did:web:${domain}`,
+          clientId: type === 'cimd'
+            ? (doc.client_id || `https://${domain}`)
+            : (doc.id || `did:web:${domain}`),
           publicKeyJwk: jwk,
           fetchedAt: Date.now(),
         };
       }
+    } catch (err) {
+      logger.debug({ domain, url, err }, `${type} fetch failed`);
     }
-  } catch (err) {
-    logger.debug({ domain, err }, 'did:web fetch also failed');
   }
 
   return null;
@@ -105,14 +106,15 @@ export async function fetchCimdDocument(domain: string): Promise<CimdDocument | 
  */
 export async function getCimdDocument(
   domain: string,
-  forceRefresh = false
+  forceRefresh = false,
+  cimdUrl?: string | null,
 ): Promise<CimdDocument | null> {
   if (!forceRefresh) {
     const cached = cimdCache.get(domain);
     if (cached) return cached;
   }
 
-  const doc = await fetchCimdDocument(domain);
+  const doc = await fetchCimdDocument(domain, cimdUrl);
   if (doc) {
     cimdCache.set(domain, doc);
   }
@@ -157,13 +159,43 @@ function extractPublicKeyFromCimd(doc: any): JsonWebKey | null {
 
 /**
  * Extract public key JWK from a DID document.
- * Looks in verificationMethod[] for JsonWebKey2020 or similar.
+ *
+ * Only returns keys that are referenced by an `authentication` or
+ * `assertionMethod` verification relationship, per the W3C CID spec.
+ * Falls back to the first verificationMethod only if no relationships
+ * are declared (simple DID documents).
  *
  * @see https://www.w3.org/TR/cid-1.0/#dfn-verification-relationship
  */
 function extractPublicKeyFromDidDoc(doc: any): JsonWebKey | null {
   if (!doc?.verificationMethod?.length) return null;
 
+  // Build a set of method IDs referenced by authentication or assertionMethod
+  const allowedIds = new Set<string>();
+  for (const rel of ['authentication', 'assertionMethod']) {
+    const refs = doc[rel];
+    if (Array.isArray(refs)) {
+      for (const ref of refs) {
+        if (typeof ref === 'string') {
+          allowedIds.add(ref);
+        } else if (ref?.id) {
+          allowedIds.add(ref.id);
+        }
+      }
+    }
+  }
+
+  // If relationships exist, only use keys referenced by them
+  if (allowedIds.size > 0) {
+    for (const vm of doc.verificationMethod) {
+      if (vm.publicKeyJwk && allowedIds.has(vm.id)) {
+        return vm.publicKeyJwk;
+      }
+    }
+    return null;
+  }
+
+  // Fallback for simple documents with no explicit relationships
   for (const vm of doc.verificationMethod) {
     if (vm.publicKeyJwk) {
       return vm.publicKeyJwk;
