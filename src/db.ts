@@ -205,6 +205,23 @@ export interface DidCacheEntry {
   expires_at: Date;
 }
 
+export interface EventLogEntry {
+  id: Generated<number>;
+  event_type: string;
+  community_did: string | null;
+  payload: unknown; // jsonb
+  created_at: Generated<Date>;
+}
+
+export interface StreamToken {
+  id: Generated<number>;
+  token: string;
+  app_id: number;
+  community_did: string | null;
+  expires_at: Date;
+  created_at: Generated<Date>;
+}
+
 // ─── Database type map ───────────────────────────────────────────────
 
 export interface Database {
@@ -224,6 +241,8 @@ export interface Database {
   community_app_collection_permissions: CommunityAppCollectionPermission;
   pending_hierarchy_requests: PendingHierarchyRequest;
   did_cache: DidCacheEntry;
+  event_log: EventLogEntry;
+  stream_tokens: StreamToken;
 }
 
 export function createDb(connectionString: string): Kysely<Database> {
