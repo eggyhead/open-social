@@ -68,7 +68,7 @@ describe('createVerifyApiKey middleware', () => {
     await middleware(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(json).toHaveBeenCalledWith({ error: 'API key required' });
+    expect(json).toHaveBeenCalledWith({ error: 'API key or HTTP signature required' });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -109,6 +109,52 @@ describe('createVerifyApiKey middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('sets auth_method to api_key on successful API key auth', async () => {
+    const db = createMockDb();
+    const realKey = SAMPLE_KEY_A;
+    const app = makeApp({ api_key: hashApiKey(realKey) });
+    mockAppsQuery(db, [app]);
+
+    const middleware = createVerifyApiKey(db);
+    const { req, res, next } = makeReqRes(realKey);
+
+    await middleware(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.auth_method).toBe('api_key');
+  });
+
+  it('routes to HTTP signature verification when Signature-Input header is present', async () => {
+    const db = createMockDb();
+    // Mock the DB query for signature path (uses or() clause)
+    db.selectFrom = vi.fn().mockReturnValue({
+      selectAll: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            executeTakeFirst: vi.fn().mockResolvedValue(null),
+          }),
+        }),
+      }),
+    });
+
+    const middleware = createVerifyApiKey(db);
+    const req = {
+      headers: {
+        'signature-input': 'sig1=("@method");keyid="unknown-app"',
+        'signature': 'sig1=:abc:',
+      },
+    } as unknown as AuthenticatedRequest;
+    const json = vi.fn();
+    const res = { status: vi.fn().mockReturnValue({ json }) } as unknown as Response;
+    const next: NextFunction = vi.fn();
+
+    await middleware(req, res, next);
+
+    // Should attempt HTTP signature auth and fail because app not found
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({ error: 'Unknown app' });
+  });
+
   it('safely skips apps with sentinel/non-hash api_key values', async () => {
     // The system app row stores 'SYSTEM_APP_NO_KEY' as a sentinel — it must
     // never authenticate any request, but its presence must not prevent
@@ -127,5 +173,27 @@ describe('createVerifyApiKey middleware', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.app_data?.app_id).toBe('real');
+  });
+
+  it('returns clear error when Signature-Input is present but Signature is missing', async () => {
+    const db = createMockDb();
+    const middleware = createVerifyApiKey(db);
+    const req = {
+      headers: {
+        'signature-input': 'sig1=("@method");keyid="app-1"',
+        // no 'signature' header
+      },
+    } as unknown as AuthenticatedRequest;
+    const json = vi.fn();
+    const res = { status: vi.fn().mockReturnValue({ json }) } as unknown as Response;
+    const next: NextFunction = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Signature-Input header present but Signature header is missing. Both are required.',
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 });

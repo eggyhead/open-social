@@ -17,7 +17,20 @@ export const nsidSchema = z.string().min(1, 'Collection is required').refine(
 export const registerAppSchema = z.object({
   name: z.string().min(3).max(100).regex(/^[a-zA-Z0-9\s\-_]+$/, 'Name must be alphanumeric with spaces, hyphens, or underscores'),
   domain: z.string().min(1).regex(/^[a-zA-Z0-9][a-zA-Z0-9\-.]+\.[a-zA-Z]{2,}$/, 'Invalid domain format'),
-});
+  authMethod: z.enum(['api_key', 'http_signature', 'both']).optional(),
+  cimdUrl: z.string().url().max(500)
+    .refine((url) => url.startsWith('https://'), { message: 'cimdUrl must use HTTPS' })
+    .optional(),
+}).refine(
+  (data) => {
+    if (!data.cimdUrl || !data.domain) return true;
+    try {
+      const hostname = new URL(data.cimdUrl).hostname;
+      return hostname === data.domain || hostname.endsWith(`.${data.domain}`);
+    } catch { return false; }
+  },
+  { message: 'cimdUrl hostname must match the app domain', path: ['cimdUrl'] },
+);
 
 export const updateAppSchema = z.object({
   name: z.string().min(3).max(100).regex(/^[a-zA-Z0-9\s\-_]+$/).optional(),

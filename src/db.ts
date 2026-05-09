@@ -24,6 +24,8 @@ export interface App {
   domain: string;
   creator_did: string;
   api_key: string;
+  auth_method: 'api_key' | 'http_signature' | 'both';
+  cimd_url: string | null;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
   status: string;
