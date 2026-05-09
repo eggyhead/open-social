@@ -34,17 +34,19 @@ const MAX_SIGNATURE_AGE_SECONDS = 300;
  */
 export function parseSignatureInput(input: string): SignatureInput | null {
   try {
-    // Match the component list: ("comp1" "comp2" ...)
-    const listMatch = input.match(/\(([^)]*)\)/);
-    if (!listMatch) return null;
+    // Extract the component list between ( and ) without regex to avoid ReDoS
+    const openParen = input.indexOf('(');
+    const closeParen = input.indexOf(')');
+    if (openParen === -1 || closeParen === -1 || closeParen <= openParen) return null;
 
-    const components = listMatch[1]
+    const listContent = input.slice(openParen + 1, closeParen);
+    const components = listContent
       .split(/\s+/)
       .map((c) => c.replace(/"/g, ''))
       .filter(Boolean);
 
     // Parse parameters after the closing paren
-    const paramStr = input.slice(input.indexOf(')') + 1);
+    const paramStr = input.slice(closeParen + 1);
     const params: Record<string, string | number> = {};
 
     for (const match of paramStr.matchAll(/;(\w+)=(?:"([^"]*)"|(\d+))/g)) {
