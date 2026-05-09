@@ -68,7 +68,7 @@ describe('createVerifyApiKey middleware', () => {
     await middleware(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(json).toHaveBeenCalledWith({ error: 'API key required' });
+    expect(json).toHaveBeenCalledWith({ error: 'API key or HTTP signature required' });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -107,6 +107,52 @@ describe('createVerifyApiKey middleware', () => {
     expect(res.status).toHaveBeenCalledWith(401);
     expect(json).toHaveBeenCalledWith({ error: 'Invalid API key' });
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('sets auth_method to api_key on successful API key auth', async () => {
+    const db = createMockDb();
+    const realKey = SAMPLE_KEY_A;
+    const app = makeApp({ api_key: hashApiKey(realKey) });
+    mockAppsQuery(db, [app]);
+
+    const middleware = createVerifyApiKey(db);
+    const { req, res, next } = makeReqRes(realKey);
+
+    await middleware(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.auth_method).toBe('api_key');
+  });
+
+  it('routes to HTTP signature verification when Signature-Input header is present', async () => {
+    const db = createMockDb();
+    // Mock the DB query for signature path (uses or() clause)
+    db.selectFrom = vi.fn().mockReturnValue({
+      selectAll: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            executeTakeFirst: vi.fn().mockResolvedValue(null),
+          }),
+        }),
+      }),
+    });
+
+    const middleware = createVerifyApiKey(db);
+    const req = {
+      headers: {
+        'signature-input': 'sig1=("@method");keyid="unknown-app"',
+        'signature': 'sig1=:abc:',
+      },
+    } as unknown as AuthenticatedRequest;
+    const json = vi.fn();
+    const res = { status: vi.fn().mockReturnValue({ json }) } as unknown as Response;
+    const next: NextFunction = vi.fn();
+
+    await middleware(req, res, next);
+
+    // Should attempt HTTP signature auth and fail because app not found
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({ error: 'Unknown app' });
   });
 
   it('safely skips apps with sentinel/non-hash api_key values', async () => {

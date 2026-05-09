@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { hashApiKey, verifyApiKey as verifyApiKeyHash } from '../lib/crypto';
+import { getCimdDocument, invalidateCimdCache, jwkToKeyObject } from '../lib/cimd';
+import { verifyRequestSignature } from '../lib/httpSig';
 import { logger } from '../lib/logger';
 
 export interface AuthenticatedRequest extends Request {
@@ -15,6 +17,8 @@ export interface AuthenticatedRequest extends Request {
     created_at: Date;
     updated_at: Date;
   };
+  /** Set to 'api_key' or 'http_signature' depending on how the request was authenticated */
+  auth_method?: 'api_key' | 'http_signature';
 }
 
 export function createVerifyApiKey(db: Kysely<Database>) {
@@ -24,9 +28,16 @@ export function createVerifyApiKey(db: Kysely<Database>) {
     next: NextFunction
   ) {
     const apiKey = req.headers['x-api-key'] as string;
+    const signatureInput = req.headers['signature-input'] as string;
 
+    // Try HTTP Message Signature auth first if headers are present
+    if (signatureInput && req.headers['signature']) {
+      return verifyHttpSignature(req, res, next, db);
+    }
+
+    // Fall back to API key auth
     if (!apiKey) {
-      return res.status(401).json({ error: 'API key required' });
+      return res.status(401).json({ error: 'API key or HTTP signature required' });
     }
 
     try {
@@ -47,12 +58,85 @@ export function createVerifyApiKey(db: Kysely<Database>) {
       }
 
       req.app_data = app;
+      req.auth_method = 'api_key';
       next();
     } catch (error) {
       logger.error({ error, correlationId: req.correlationId }, 'Auth error');
       res.status(500).json({ error: 'Authentication failed' });
     }
   };
+}
+
+/**
+ * Verify a request using HTTP Message Signatures.
+ *
+ * 1. Extract the keyid from Signature-Input (maps to app domain)
+ * 2. Fetch the app's CIMD document to get their public key
+ * 3. Verify the signature against the public key
+ * 4. On verification failure, invalidate CIMD cache and retry once
+ */
+async function verifyHttpSignature(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+  db: Kysely<Database>
+) {
+  try {
+    const signatureInput = req.headers['signature-input'] as string;
+
+    // Extract keyid from signature input — this identifies the app
+    const keyIdMatch = signatureInput.match(/keyid="([^"]*)"/);
+    if (!keyIdMatch) {
+      return res.status(401).json({ error: 'Missing keyid in Signature-Input' });
+    }
+    const keyId = keyIdMatch[1];
+
+    // Look up the app by app_id or domain
+    const app = await db
+      .selectFrom('apps')
+      .selectAll()
+      .where('status', '=', 'active')
+      .where((eb) => eb.or([
+        eb('app_id', '=', keyId),
+        eb('domain', '=', keyId),
+      ]))
+      .executeTakeFirst();
+
+    if (!app) {
+      return res.status(401).json({ error: 'Unknown app' });
+    }
+
+    // Fetch CIMD document for the app's domain
+    const cimd = await getCimdDocument(app.domain);
+    if (!cimd) {
+      return res.status(401).json({ error: 'Could not fetch client identity document' });
+    }
+
+    const publicKey = jwkToKeyObject(cimd.publicKeyJwk);
+    let result = verifyRequestSignature(req, publicKey);
+
+    // If verification fails, maybe the key rotated — refetch and retry once
+    if (!result.valid) {
+      invalidateCimdCache(app.domain);
+      const freshCimd = await getCimdDocument(app.domain, true);
+      if (freshCimd) {
+        const freshKey = jwkToKeyObject(freshCimd.publicKeyJwk);
+        result = verifyRequestSignature(req, freshKey);
+      }
+    }
+
+    if (!result.valid) {
+      logger.warn({ domain: app.domain, error: result.error }, 'HTTP signature verification failed');
+      return res.status(401).json({ error: result.error || 'Signature verification failed' });
+    }
+
+    req.app_data = app;
+    req.auth_method = 'http_signature';
+    next();
+  } catch (error) {
+    logger.error({ error, correlationId: req.correlationId }, 'HTTP signature auth error');
+    res.status(500).json({ error: 'Authentication failed' });
+  }
 }
 
 /**
