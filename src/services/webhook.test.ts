@@ -227,7 +227,7 @@ describe('webhook.ts', () => {
         }),
       });
       expect(body.timestamp).toBeDefined();
-      expect(new Date(body.timestamp)).toBeInstanceOf(Date);
+      expect(Number.isNaN(new Date(body.timestamp).getTime())).toBe(false);
     });
 
     it('should filter by community DID', async () => {

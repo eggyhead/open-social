@@ -51,8 +51,10 @@ export function createWebhookService(db: Kysely<Database>) {
       };
 
       for (const webhook of matchingWebhooks) {
+        // Generate msgId once per webhook so it's stable across retries (idempotency key)
+        const msgId = `msg_${crypto.randomBytes(16).toString('base64url')}`;
         retry(
-          () => fireWebhook(webhook.url, payload, webhook.secret),
+          () => fireWebhook(webhook.url, payload, webhook.secret, msgId),
           {
             maxRetries: 3,
             initialDelay: 1000,
@@ -91,9 +93,8 @@ export function createWebhookService(db: Kysely<Database>) {
  *
  * @see https://www.standardwebhooks.com/
  */
-async function fireWebhook(url: string, payload: WebhookPayload, secret?: string | null) {
+async function fireWebhook(url: string, payload: WebhookPayload, secret: string | null | undefined, msgId: string) {
   const body = JSON.stringify(payload);
-  const msgId = `msg_${crypto.randomBytes(16).toString('base64url')}`;
   const timestamp = Math.floor(Date.now() / 1000).toString();
 
   const headers: Record<string, string> = {
@@ -105,9 +106,15 @@ async function fireWebhook(url: string, payload: WebhookPayload, secret?: string
 
   if (secret) {
     const toSign = `${msgId}.${timestamp}.${body}`;
-    // Secrets are stored with whsec_ prefix per Standard Webhooks
-    const rawSecret = secret.startsWith('whsec_') ? secret.slice(6) : secret;
-    const secretBytes = Buffer.from(rawSecret, 'base64');
+    // Decode the secret: whsec_ prefix → base64, hex string → hex, otherwise raw bytes
+    let secretBytes: Buffer;
+    if (secret.startsWith('whsec_')) {
+      secretBytes = Buffer.from(secret.slice(6), 'base64');
+    } else if (/^[0-9a-f]{32,}$/i.test(secret)) {
+      secretBytes = Buffer.from(secret, 'hex');
+    } else {
+      secretBytes = Buffer.from(secret, 'utf-8');
+    }
     const signature = crypto.createHmac('sha256', secretBytes).update(toSign).digest('base64');
     headers['webhook-signature'] = `v1,${signature}`;
   }
