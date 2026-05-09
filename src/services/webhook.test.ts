@@ -4,7 +4,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { createWebhookService } from '../services/webhook';
+import crypto from 'crypto';
+import { createWebhookService, generateWebhookSecret } from '../services/webhook';
 import { createMockDb, createFakeWebhook, waitForAsync } from '../test/helpers';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
@@ -108,11 +109,12 @@ describe('webhook.ts', () => {
       );
     });
 
-    it('should include webhook signature when secret is provided', async () => {
+    it('should include Standard Webhooks signature headers when secret is provided', async () => {
+      const secret = generateWebhookSecret();
       const mockWebhook = createFakeWebhook({
         url: 'https://example.com/webhook',
         events: ['member.joined'],
-        secret: 'test-secret-key',
+        secret,
         active: true,
       });
 
@@ -142,7 +144,9 @@ describe('webhook.ts', () => {
         mockWebhook.url,
         expect.objectContaining({
           headers: expect.objectContaining({
-            'X-Webhook-Signature': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
+            'webhook-id': expect.stringMatching(/^msg_/),
+            'webhook-timestamp': expect.stringMatching(/^\d+$/),
+            'webhook-signature': expect.stringMatching(/^v1,[A-Za-z0-9+/]+=*$/),
           }),
         })
       );
@@ -179,7 +183,7 @@ describe('webhook.ts', () => {
       await waitForAsync(50);
 
       const fetchCall = (global.fetch as any).mock.calls[0];
-      expect(fetchCall[1].headers['X-Webhook-Signature']).toBeUndefined();
+      expect(fetchCall[1].headers['webhook-signature']).toBeUndefined();
     });
 
     it('should send correct payload structure', async () => {
@@ -215,9 +219,12 @@ describe('webhook.ts', () => {
       const body = JSON.parse(fetchCall[1].body);
 
       expect(body).toMatchObject({
-        event: 'member.joined',
-        communityDid: 'did:plc:test123',
-        data: eventData,
+        type: 'member.joined',
+        data: expect.objectContaining({
+          communityDid: 'did:plc:test123',
+          userDid: 'did:plc:user456',
+          name: 'Test User',
+        }),
       });
       expect(body.timestamp).toBeDefined();
       expect(new Date(body.timestamp)).toBeInstanceOf(Date);
@@ -405,5 +412,47 @@ describe('webhook.ts', () => {
       const fetchCall = (global.fetch as any).mock.calls[0];
       expect(fetchCall[1].signal).toBeDefined();
     });
+  });
+});
+
+describe('generateWebhookSecret', () => {
+  it('generates a secret with whsec_ prefix', () => {
+    const secret = generateWebhookSecret();
+    expect(secret).toMatch(/^whsec_/);
+  });
+
+  it('generates base64-encoded bytes after prefix', () => {
+    const secret = generateWebhookSecret();
+    const raw = secret.slice(6);
+    expect(() => Buffer.from(raw, 'base64')).not.toThrow();
+    expect(Buffer.from(raw, 'base64').length).toBe(32);
+  });
+
+  it('generates unique secrets', () => {
+    const a = generateWebhookSecret();
+    const b = generateWebhookSecret();
+    expect(a).not.toBe(b);
+  });
+});
+
+describe('Standard Webhooks signature verification', () => {
+  it('produces correct v1 HMAC-SHA256 signature that consumers can verify', () => {
+    const secret = generateWebhookSecret();
+    const rawSecret = secret.slice(6);
+    const secretBytes = Buffer.from(rawSecret, 'base64');
+
+    const msgId = 'msg_test123';
+    const timestamp = '1700000000';
+    const body = '{"type":"member.joined","timestamp":"2026-01-01T00:00:00Z","data":{}}';
+
+    const toSign = `${msgId}.${timestamp}.${body}`;
+    const signature = crypto.createHmac('sha256', secretBytes).update(toSign).digest('base64');
+    const header = `v1,${signature}`;
+
+    expect(header).toMatch(/^v1,[A-Za-z0-9+/]+=*$/);
+
+    // Consumer can reproduce it
+    const consumerSig = crypto.createHmac('sha256', secretBytes).update(toSign).digest('base64');
+    expect(consumerSig).toBe(signature);
   });
 });

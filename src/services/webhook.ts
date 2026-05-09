@@ -1,4 +1,5 @@
 import type { Kysely } from 'kysely';
+import crypto from 'crypto';
 import type { Database } from '../db';
 import { logger } from '../lib/logger';
 import { retry, isTransientError } from '../lib/retry';
@@ -13,11 +14,14 @@ export type WebhookEvent =
   | 'record.updated'
   | 'record.deleted';
 
+/**
+ * Standard Webhooks payload format.
+ * @see https://www.standardwebhooks.com/
+ */
 interface WebhookPayload {
-  event: WebhookEvent;
-  communityDid: string;
-  data: Record<string, any>;
+  type: WebhookEvent;
   timestamp: string;
+  data: Record<string, any>;
 }
 
 export function createWebhookService(db: Kysely<Database>) {
@@ -41,13 +45,11 @@ export function createWebhookService(db: Kysely<Database>) {
       });
 
       const payload: WebhookPayload = {
-        event,
-        communityDid,
-        data,
+        type: event,
         timestamp: new Date().toISOString(),
+        data: { ...data, communityDid },
       };
 
-      // Fire and forget \u2014 don't block the response
       for (const webhook of matchingWebhooks) {
         retry(
           () => fireWebhook(webhook.url, payload, webhook.secret),
@@ -79,17 +81,35 @@ export function createWebhookService(db: Kysely<Database>) {
   return { dispatch };
 }
 
+/**
+ * Sign and deliver a webhook per the Standard Webhooks spec.
+ *
+ * Headers:
+ * - webhook-id:        unique message ID (idempotency key, stable across retries)
+ * - webhook-timestamp: unix seconds of this delivery attempt
+ * - webhook-signature: v1,{base64 HMAC-SHA256 of msg_id.timestamp.body}
+ *
+ * @see https://www.standardwebhooks.com/
+ */
 async function fireWebhook(url: string, payload: WebhookPayload, secret?: string | null) {
   const body = JSON.stringify(payload);
+  const msgId = `msg_${crypto.randomBytes(16).toString('base64url')}`;
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'User-Agent': 'OpenSocial-Webhooks/1.0',
+    'webhook-id': msgId,
+    'webhook-timestamp': timestamp,
   };
 
   if (secret) {
-    const crypto = await import('crypto');
-    const signature = crypto.createHmac('sha256', secret).update(body).digest('hex');
-    headers['X-Webhook-Signature'] = `sha256=${signature}`;
+    const toSign = `${msgId}.${timestamp}.${body}`;
+    // Secrets are stored with whsec_ prefix per Standard Webhooks
+    const rawSecret = secret.startsWith('whsec_') ? secret.slice(6) : secret;
+    const secretBytes = Buffer.from(rawSecret, 'base64');
+    const signature = crypto.createHmac('sha256', secretBytes).update(toSign).digest('base64');
+    headers['webhook-signature'] = `v1,${signature}`;
   }
 
   const response = await fetch(url, {
@@ -102,4 +122,13 @@ async function fireWebhook(url: string, payload: WebhookPayload, secret?: string
   if (!response.ok) {
     throw new Error(`Webhook returned ${response.status}`);
   }
+}
+
+/**
+ * Generate a Standard Webhooks signing secret.
+ * Format: whsec_{base64 random bytes}
+ */
+export function generateWebhookSecret(): string {
+  const bytes = crypto.randomBytes(32);
+  return `whsec_${bytes.toString('base64')}`;
 }

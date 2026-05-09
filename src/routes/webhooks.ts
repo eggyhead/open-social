@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import crypto from 'crypto';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { createVerifyApiKey, type AuthenticatedRequest } from '../middleware/auth';
+import { generateWebhookSecret } from '../services/webhook';
 import { createWebhookSchema, updateWebhookSchema } from '../validation/schemas';
 import { parsePagination, encodeCursor, decodeCursor } from '../lib/pagination';
 import { logger } from '../lib/logger';
@@ -30,7 +30,7 @@ export function createWebhookRouter(db: Kysely<Database>): Router {
         return res.status(400).json({ error: error.message });
       }
 
-      const secret = crypto.randomBytes(32).toString('hex');
+      const secret = generateWebhookSecret();
 
       const result = await db
         .insertInto('webhooks')
@@ -55,7 +55,7 @@ export function createWebhookRouter(db: Kysely<Database>): Router {
           active: result.active,
           createdAt: result.created_at,
         },
-        message: 'Store the secret securely — it is used to verify webhook signatures.',
+        message: 'Store the secret securely — use it to verify webhook signatures per the Standard Webhooks spec.',
       });
     } catch (error) {
       logger.error({ error }, 'Create webhook error');
