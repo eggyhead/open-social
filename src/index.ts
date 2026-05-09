@@ -136,7 +136,7 @@ async function start() {
     const server = http.createServer(app);
 
     // Attach WebSocket event stream to the HTTP server
-    const eventStream = createEventStream(server, db, eventStreamService);
+    const eventStream = createEventStream(server, eventStreamService);
 
     server.listen(PORT, () => {
       logger.info({ 

@@ -24,6 +24,12 @@ export async function up(db: Kysely<any>): Promise<void> {
     .column('community_did')
     .execute();
 
+  await db.schema
+    .createIndex('idx_event_log_community_did_id')
+    .on('event_log')
+    .columns(['community_did', 'id'])
+    .execute();
+
   // Stream tokens for signed URL authentication
   await db.schema
     .createTable('stream_tokens')

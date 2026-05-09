@@ -3,6 +3,12 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { createVerifyApiKey, type AuthenticatedRequest } from '../middleware/auth';
 import type { EventStreamService } from '../services/eventStream';
+import { logger } from '../lib/logger';
+import { z } from 'zod';
+
+const streamTokenSchema = z.object({
+  communityDid: z.string().startsWith('did:').optional(),
+});
 
 /**
  * Stream token endpoint.
@@ -16,7 +22,12 @@ export function createStreamRouter(db: Kysely<Database>, eventStreamService: Eve
   // POST /api/v1/stream/token — get a signed stream URL token
   router.post('/token', verifyApiKey, async (req: AuthenticatedRequest, res) => {
     try {
-      const { communityDid } = req.body;
+      const parsed = streamTokenSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
+      }
+
+      const { communityDid } = parsed.data;
 
       const appRecord = await db
         .selectFrom('apps')
@@ -45,6 +56,7 @@ export function createStreamRouter(db: Kysely<Database>, eventStreamService: Eve
         message: 'Connect to the WebSocket URL within 5 minutes. Pass ?cursor=<last-event-id> to resume from a previous position.',
       });
     } catch (err) {
+      logger.error({ error: err, correlationId: req.correlationId }, 'Failed to create stream token');
       return res.status(500).json({ error: 'Failed to create stream token' });
     }
   });

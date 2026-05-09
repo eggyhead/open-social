@@ -23,7 +23,7 @@ describe('WebSocket Event Stream', () => {
   beforeEach(async () => {
     server = http.createServer();
     mockService = createMockEventStreamService();
-    eventStream = createEventStream(server, {} as any, mockService);
+    eventStream = createEventStream(server, mockService);
 
     await new Promise<void>((resolve) => {
       server.listen(0, () => {
@@ -147,10 +147,11 @@ describe('WebSocket Event Stream', () => {
     ws.close();
   });
 
-  it('replays missed events on reconnection with cursor', async () => {
+  it('replays missed events on reconnection with cursor, parsing string payloads', async () => {
+    // Simulate what the DB returns: payload as JSON string (not parsed object)
     const missedEvents = [
-      { id: 5, event_type: 'member.joined', community_did: 'did:plc:test', payload: { foo: 'bar' }, created_at: new Date() },
-      { id: 6, event_type: 'member.left', community_did: 'did:plc:test', payload: { baz: 'qux' }, created_at: new Date() },
+      { id: 5, event_type: 'member.joined', community_did: 'did:plc:test', payload: '{"userDid":"did:plc:user1","communityDid":"did:plc:test"}', created_at: new Date() },
+      { id: 6, event_type: 'member.left', community_did: 'did:plc:test', payload: '{"userDid":"did:plc:user2","communityDid":"did:plc:test"}', created_at: new Date() },
     ];
     mockService.getEventsSince.mockResolvedValueOnce(missedEvents);
     mockService.consumeStreamToken.mockResolvedValueOnce({
@@ -171,7 +172,12 @@ describe('WebSocket Event Stream', () => {
 
     expect(messages.length).toBe(2);
     expect(messages[0].id).toBe(5);
+    expect(messages[0].type).toBe('member.joined');
+    // Verify payload was parsed from string into object (consistent with live frames)
+    expect(messages[0].data).toEqual({ userDid: 'did:plc:user1', communityDid: 'did:plc:test' });
     expect(messages[1].id).toBe(6);
+    expect(messages[1].type).toBe('member.left');
+    expect(messages[1].data).toEqual({ userDid: 'did:plc:user2', communityDid: 'did:plc:test' });
     expect(mockService.getEventsSince).toHaveBeenCalledWith(4, undefined);
 
     ws.close();

@@ -1,7 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
-import type { Kysely } from 'kysely';
-import type { Database } from '../db';
 import type { EventStreamService } from '../services/eventStream';
 import type { WebhookEvent } from '../services/webhook';
 import { logger } from '../lib/logger';
@@ -27,7 +25,6 @@ interface StreamClient {
  */
 export function createEventStream(
   server: Server,
-  db: Kysely<Database>,
   eventStreamService: EventStreamService
 ) {
   const clients = new Set<StreamClient>();
@@ -69,7 +66,8 @@ export function createEventStream(
     const auth = (req as any)._streamAuth as { appId: number; communityDid: string | null };
     const url = new URL(req.url ?? '', `http://${req.headers.host}`);
     const cursorParam = url.searchParams.get('cursor');
-    const cursor = cursorParam ? parseInt(cursorParam, 10) : 0;
+    const parsedCursor = cursorParam ? parseInt(cursorParam, 10) : 0;
+    const cursor = Number.isFinite(parsedCursor) && parsedCursor > 0 ? parsedCursor : 0;
 
     const client: StreamClient = {
       ws,
@@ -98,11 +96,16 @@ export function createEventStream(
         for (const event of missed) {
           if (ws.readyState !== WebSocket.OPEN) break;
 
+          // Parse payload if stored as JSON string to ensure consistent frame format
+          const data = typeof event.payload === 'string'
+            ? JSON.parse(event.payload)
+            : event.payload;
+
           ws.send(JSON.stringify({
             id: event.id,
             type: event.event_type,
             timestamp: event.created_at,
-            data: event.payload,
+            data,
           }));
 
           client.lastCursor = event.id as number;

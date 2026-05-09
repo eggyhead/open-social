@@ -23,6 +23,10 @@ function createMockDb() {
   const mockSelect = createMockResult([]);
   const mockDelete = createMockResult();
   (mockDelete as any).executeTakeFirst = vi.fn().mockResolvedValue({ numDeletedRows: BigInt(0) });
+  // For atomic consume: deleteFrom().where().where().returning().executeTakeFirst()
+  (mockDelete as any).returning = vi.fn().mockReturnValue({
+    executeTakeFirst: vi.fn().mockResolvedValue(undefined),
+  });
 
   return {
     insertInto: vi.fn().mockReturnValue(mockInsert),
@@ -72,24 +76,7 @@ describe('EventStreamService', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null for expired token', async () => {
-      const expiredToken = {
-        id: 1,
-        token: 'test',
-        app_id: 1,
-        community_did: null,
-        expires_at: new Date(Date.now() - 1000),
-        created_at: new Date(),
-      };
-
-      db._mockSelect.executeTakeFirst.mockResolvedValueOnce(expiredToken);
-      const result = await service.consumeStreamToken('test');
-      expect(result).toBeNull();
-      // Should still delete the expired token
-      expect(db.deleteFrom).toHaveBeenCalledWith('stream_tokens');
-    });
-
-    it('returns token record and deletes for valid token', async () => {
+    it('returns token record atomically via DELETE...RETURNING', async () => {
       const validToken = {
         id: 1,
         token: 'valid',
@@ -99,11 +86,21 @@ describe('EventStreamService', () => {
         created_at: new Date(),
       };
 
-      db._mockSelect.executeTakeFirst.mockResolvedValueOnce(validToken);
+      // Mock the atomic delete-returning chain
+      db._mockDelete.returning = vi.fn().mockReturnValue({
+        executeTakeFirst: vi.fn().mockResolvedValue(validToken),
+      });
+
       const result = await service.consumeStreamToken('valid');
 
       expect(result).toEqual(validToken);
       expect(db.deleteFrom).toHaveBeenCalledWith('stream_tokens');
+    });
+
+    it('returns null when no matching non-expired token exists', async () => {
+      // Default mock returns undefined (no matching row)
+      const result = await service.consumeStreamToken('expired-or-missing');
+      expect(result).toBeNull();
     });
   });
 

@@ -27,25 +27,18 @@ export function createEventStreamService(db: Kysely<Database>) {
   }
 
   /**
-   * Validate and consume a stream token. Returns the token record if valid,
-   * null otherwise. Tokens are deleted after validation (single-use).
+   * Validate and consume a stream token atomically. Returns the token record
+   * if valid, null otherwise. Uses DELETE...RETURNING to prevent race conditions.
    */
   async function consumeStreamToken(token: string) {
     const row = await db
-      .selectFrom('stream_tokens')
-      .selectAll()
+      .deleteFrom('stream_tokens')
       .where('token', '=', token)
+      .where('expires_at', '>', new Date())
+      .returning(['id', 'token', 'app_id', 'community_did', 'expires_at', 'created_at'])
       .executeTakeFirst();
 
-    if (!row) return null;
-
-    // Delete the token (single-use)
-    await db.deleteFrom('stream_tokens').where('id', '=', row.id).execute();
-
-    // Check expiration
-    if (new Date(row.expires_at) < new Date()) return null;
-
-    return row;
+    return row ?? null;
   }
 
   /**
@@ -62,7 +55,7 @@ export function createEventStreamService(db: Kysely<Database>) {
       .values({
         event_type: eventType,
         community_did: communityDid,
-        payload: JSON.stringify({ type: eventType, data: { ...data, communityDid } }),
+        payload: JSON.stringify({ ...data, communityDid }),
       })
       .returning('id')
       .executeTakeFirstOrThrow();
