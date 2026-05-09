@@ -13,7 +13,14 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { createMockDb } from '../test/helpers';
 import { hashApiKey } from '../lib/crypto';
-import { createVerifyApiKey, type AuthenticatedRequest } from './auth';
+import {
+  createVerifyApiKey,
+  parseScopeString,
+  hasScope,
+  OPENSOCIAL_SCOPES,
+  MEMBERSHIP_WRITE_SCOPE,
+  type AuthenticatedRequest,
+} from './auth';
 
 function makeApp(overrides: Partial<Record<string, unknown>>) {
   return {
@@ -195,5 +202,86 @@ describe('createVerifyApiKey middleware', () => {
       error: 'Signature-Input header present but Signature header is missing. Both are required.',
     });
     expect(next).not.toHaveBeenCalled();
+  });
+});
+
+// ── parseScopeString ──────────────────────────────────────────────
+// Regression coverage for PR #73: scope parsing must handle real OAuth
+// scope strings without crashing or silently skipping scopes.
+
+describe('parseScopeString', () => {
+  it('splits a standard OAuth scope string into individual scopes', () => {
+    const result = parseScopeString('atproto repo:community.opensocial.membership');
+    expect(result).toEqual(['atproto', 'repo:community.opensocial.membership']);
+  });
+
+  it('handles leading, trailing, and repeated whitespace between scopes', () => {
+    const result = parseScopeString('  atproto   repo:community.opensocial.membership  ');
+    expect(result).toEqual(['atproto', 'repo:community.opensocial.membership']);
+  });
+
+  it('returns an empty array for an empty string without throwing', () => {
+    expect(() => parseScopeString('')).not.toThrow();
+    expect(parseScopeString('')).toEqual([]);
+  });
+
+  it('returns a single-element array for a single scope with no spaces', () => {
+    expect(parseScopeString('atproto')).toEqual(['atproto']);
+  });
+});
+
+// ── hasScope (satisfiesScope) ─────────────────────────────────────
+// Security regression for PR #73: incorrect wildcard matching or
+// cross-resource-type grants must not slip through.
+
+describe('hasScope (satisfiesScope)', () => {
+  it('returns true for an exact scope match', () => {
+    expect(
+      hasScope('atproto repo:community.opensocial.membership', 'repo:community.opensocial.membership')
+    ).toBe(true);
+  });
+
+  it('returns true when a repo:* wildcard is granted', () => {
+    // A granted `repo:*` scope covers any `repo:` collection.
+    expect(hasScope('repo:*', 'repo:community.opensocial.membership')).toBe(true);
+    expect(hasScope('atproto repo:*', 'repo:foo.bar.baz')).toBe(true);
+  });
+
+  it('returns false when the required scope is absent and no wildcard covers it', () => {
+    expect(hasScope('atproto', 'repo:community.opensocial.membership')).toBe(false);
+  });
+
+  it('the bare atproto scope does NOT grant repo: access (security invariant)', () => {
+    // Critical: `atproto` is a base scope — it must never implicitly grant
+    // write access to repo collections (PR #73 gap).
+    expect(hasScope('atproto', 'repo:foo')).toBe(false);
+  });
+
+  it('does not grant access when an unrelated resource type wildcard is present', () => {
+    // `weird:*` covers the `weird:` namespace only — must not bleed into `repo:`.
+    expect(hasScope('weird:*', 'repo:community.opensocial.membership')).toBe(false);
+  });
+
+  it('returns false when granted scopes list is empty', () => {
+    expect(hasScope('', 'repo:community.opensocial.membership')).toBe(false);
+  });
+});
+
+// ── Scope constants ───────────────────────────────────────────────
+// Snapshot-style assertions: if these values change we want a test failure
+// that forces a deliberate decision rather than a silent drift.
+
+describe('OPENSOCIAL_SCOPES and MEMBERSHIP_WRITE_SCOPE constants', () => {
+  it('OPENSOCIAL_SCOPES contains both the atproto base scope and the membership write scope', () => {
+    expect(OPENSOCIAL_SCOPES).toBe('atproto repo:community.opensocial.membership');
+  });
+
+  it('MEMBERSHIP_WRITE_SCOPE identifies the membership collection exactly', () => {
+    expect(MEMBERSHIP_WRITE_SCOPE).toBe('repo:community.opensocial.membership');
+  });
+
+  it('MEMBERSHIP_WRITE_SCOPE is included in OPENSOCIAL_SCOPES', () => {
+    // Ensures the full scope string actually grants what it advertises.
+    expect(hasScope(OPENSOCIAL_SCOPES, MEMBERSHIP_WRITE_SCOPE)).toBe(true);
   });
 });
