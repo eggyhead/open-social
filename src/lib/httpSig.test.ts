@@ -192,11 +192,8 @@ describe('verifyRequestSignature (end-to-end)', () => {
   });
 
   it('verifies a valid RSA-PSS signature', () => {
-    const keyPair = crypto.generateKeyPairSync('rsa-pss', {
+    const keyPair = crypto.generateKeyPairSync('rsa', {
       modulusLength: 2048,
-      hashAlgorithm: 'sha256',
-      mgf1HashAlgorithm: 'sha256',
-      saltLength: 32,
     });
     const { req, publicKey } = makeSignedRequest(keyPair, {
       alg: 'rsa-pss-sha256',
@@ -204,7 +201,7 @@ describe('verifyRequestSignature (end-to-end)', () => {
         return crypto.sign('sha256', Buffer.from(data), {
           key: privateKey,
           padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-          saltLength: 32,
+          saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
         });
       },
     });

@@ -202,7 +202,7 @@ function verifySignatureBytes(
       {
         key: publicKey,
         padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-        saltLength: crypto.constants.RSA_PSS_SALTLEN_AUTO,
+        saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
       },
       signature
     );
