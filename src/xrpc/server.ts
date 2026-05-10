@@ -32,6 +32,10 @@ export class XrpcError extends Error {
 function loadLexicons(): Record<string, any> {
   const lexDir = path.resolve(__dirname, '../../lexicons');
   const lexicons: Record<string, any> = {};
+  if (!fs.existsSync(lexDir)) {
+    logger.warn({ lexDir }, 'Lexicons directory not found — XRPC will run without schema validation');
+    return lexicons;
+  }
   for (const file of fs.readdirSync(lexDir)) {
     if (!file.endsWith('.json')) continue;
     const doc = JSON.parse(fs.readFileSync(path.join(lexDir, file), 'utf-8'));
