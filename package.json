@@ -22,7 +22,8 @@
     "dev:devnet": "bash -c 'set -a && source .env.devnet && exec tsx watch src/index.ts'",
     "seed:devnet": "bash -c 'set -a && source .env.devnet && exec tsx scripts/seed-devnet-community.ts'",
     "test:devnet": "bash -c 'set -a && source .env.devnet && exec vitest run --config vitest.config.devnet.ts'",
-    "test:integration": "vitest run test/integration/"
+    "test:integration": "vitest run test/integration/",
+    "prepare": "husky"
   },
   "author": "",
   "license": "MIT",
@@ -65,12 +66,17 @@
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.0.18",
+    "husky": "^9.1.7",
     "kysely-migration-cli": "^0.4.2",
+    "lint-staged": "^16.4.0",
     "nodemon": "^3.1.9",
     "prettier": "^3.4.2",
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "lint-staged": {
+    "*.{ts,js,json,md}": "prettier --write"
   }
 }
