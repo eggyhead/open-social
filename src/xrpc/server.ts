@@ -4,6 +4,7 @@ import path from 'path';
 import type { Kysely } from 'kysely';
 import type { Database } from '../db';
 import { createVerifyApiKey } from '../middleware/auth';
+import { createRateLimiter } from '../middleware/rateLimit';
 import { registerRecordHandlers } from './records';
 import { registerCommunityHandlers } from './communities';
 import { registerMemberHandlers } from './members';
@@ -55,7 +56,9 @@ export function createXrpcRouter(db: Kysely<Database>): Router {
   registerCommunityHandlers(handlers, db);
   registerMemberHandlers(handlers, db);
 
-  // Apply API key auth to all XRPC routes
+  // Apply rate limiting and API key auth to all XRPC routes
+  const rateLimiter = createRateLimiter(db);
+  router.use(rateLimiter);
   router.use(verifyApiKey);
 
   // GET /xrpc/:methodId — XRPC queries
