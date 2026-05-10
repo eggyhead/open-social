@@ -31,6 +31,7 @@
     "@atproto/api": "^0.13.35",
     "@atproto/identity": "^0.4.12",
     "@atproto/oauth-client-node": "^0.3.13",
+    "@atproto/xrpc-server": "^0.10.20",
     "@types/cookie-parser": "^1.4.10",
     "@types/multer": "^2.0.0",
     "bcrypt": "^6.0.0",

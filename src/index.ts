@@ -18,6 +18,7 @@ import { createStreamRouter } from './routes/stream';
 import { createPermissionsRouter } from './routes/permissions';
 import { createHierarchyRouter } from './routes/hierarchy';
 import { createEventsRouter } from './routes/events';
+import { createXrpcRouter } from './xrpc/server';
 import { createRateLimiter } from './middleware/rateLimit';
 import { csrfProtection } from './middleware/csrf';
 import { logger } from './lib/logger';
@@ -93,6 +94,7 @@ async function start() {
     // Apply global middleware
     const rateLimiter = createRateLimiter(db);
     app.use('/api/', rateLimiter);
+    app.use('/xrpc/', rateLimiter);
     app.use(csrfProtection);
 
     // Auth routes (OAuth)
@@ -121,6 +123,9 @@ async function start() {
     app.use('/api/v1/stream', createStreamRouter(db, eventStreamService));
 
     app.use('/api/v1/events', createEventsRouter(oauthClient));
+
+    // XRPC endpoints (ATProto-style RPC)
+    app.use('/xrpc', createXrpcRouter(db));
 
     // Error handling
     app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
