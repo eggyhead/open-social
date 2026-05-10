@@ -94,6 +94,7 @@ async function start() {
     // Apply global middleware
     const rateLimiter = createRateLimiter(db);
     app.use('/api/', rateLimiter);
+    app.use('/xrpc/', rateLimiter);
     app.use(csrfProtection);
 
     // Auth routes (OAuth)
