@@ -15,6 +15,7 @@ import { isAdminInList, normalizeAdmins } from "../lib/adminUtils";
 import { encodeCursor, decodeCursor } from "../lib/pagination";
 import { logger } from "../lib/logger";
 import { logWarning } from "../lib/errors";
+import { blobToUrl, fetchBlueskyAvatar } from "../lib/avatar";
 
 export function registerCommunityHandlers(
   handlers: Map<string, XrpcHandler>,
@@ -117,6 +118,17 @@ export function registerCommunityHandlers(
         });
       }
 
+      // Resolve the avatar to a fully-qualified URL. Records store a blob
+      // ref, which can't be used directly as an <img src>. Fall back to the
+      // underlying Bluesky profile avatar when the community hasn't uploaded
+      // its own, so brand-new communities still display something familiar.
+      const avatarUrl =
+        blobToUrl(profile.avatar, communityDid, community.pds_host) ||
+        (await fetchBlueskyAvatar(communityDid)) ||
+        null;
+      const bannerUrl =
+        blobToUrl(profile.banner, communityDid, community.pds_host) || null;
+
       return {
         community: {
           did: community.did,
@@ -125,8 +137,8 @@ export function registerCommunityHandlers(
           description: profile.description || "",
           guidelines: profile.guidelines || "",
           type: profile.type || "open",
-          avatar: profile.avatar || null,
-          banner: profile.banner || null,
+          avatar: avatarUrl,
+          banner: bannerUrl,
           admins: normalizeAdmins(admins).map((a) => a.did),
           createdAt: community.created_at,
           memberCount,
@@ -196,6 +208,9 @@ export function registerCommunityHandlers(
           let isAdmin = false;
           let type = "open";
           let memberCount = community.member_count || 0;
+          // Captured for avatar resolution below — the profile record holds
+          // the blob ref we need to turn into a URL.
+          let profile: any = null;
 
           try {
             const agent = await createCommunityAgent(db, community.did);
@@ -206,7 +221,8 @@ export function registerCommunityHandlers(
                 collection: "community.opensocial.profile",
                 rkey: "self",
               });
-              type = (profileRes.data.value as any)?.type || "open";
+              profile = profileRes.data.value as any;
+              type = profile?.type || "open";
             } catch (e) {
               logWarning("Failed to fetch community profile", {
                 error: e,
@@ -237,6 +253,14 @@ export function registerCommunityHandlers(
             });
           }
 
+          // Resolve avatar in the same way as getCommunity so consumers get a
+          // usable URL rather than a raw blob ref. Falls back to the underlying
+          // Bluesky profile avatar when the community hasn't uploaded its own.
+          const avatarUrl =
+            blobToUrl(profile?.avatar, community.did, community.pds_host) ||
+            (await fetchBlueskyAvatar(community.did)) ||
+            null;
+
           return {
             did: community.did,
             handle: community.handle,
@@ -244,6 +268,7 @@ export function registerCommunityHandlers(
             type,
             isAdmin,
             memberCount,
+            avatar: avatarUrl,
             createdAt:
               community.created_at instanceof Date
                 ? community.created_at.toISOString()

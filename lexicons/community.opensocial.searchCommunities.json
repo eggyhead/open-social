@@ -38,7 +38,8 @@
                   "type": { "type": "string" },
                   "isAdmin": { "type": "boolean" },
                   "memberCount": { "type": "integer" },
-                  "createdAt": { "type": "string", "format": "datetime" }
+                  "createdAt": { "type": "string", "format": "datetime" },
+                  "avatar": { "type": "string" }
                 }
               }
             },
