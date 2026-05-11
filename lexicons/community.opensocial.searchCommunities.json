@@ -24,14 +24,21 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["did", "handle", "displayName", "type", "memberCount"],
+                "required": [
+                  "did",
+                  "handle",
+                  "displayName",
+                  "type",
+                  "memberCount"
+                ],
                 "properties": {
                   "did": { "type": "string", "format": "did" },
                   "handle": { "type": "string" },
                   "displayName": { "type": "string" },
                   "type": { "type": "string" },
                   "isAdmin": { "type": "boolean" },
-                  "memberCount": { "type": "integer" }
+                  "memberCount": { "type": "integer" },
+                  "createdAt": { "type": "string", "format": "datetime" }
                 }
               }
             },
@@ -39,9 +46,7 @@
           }
         }
       },
-      "errors": [
-        { "name": "QueryTooShort" }
-      ]
+      "errors": [{ "name": "QueryTooShort" }]
     }
   }
 }

@@ -51,7 +51,33 @@
               "format": "did"
             },
             "description": "List of labeler DIDs for community moderation"
+          },
+          "links": {
+            "type": "array",
+            "maxLength": 16,
+            "description": "External links surfaced on the community's page (e.g. website, Discord, docs)",
+            "items": {
+              "type": "ref",
+              "ref": "#linkEntry"
+            }
           }
+        }
+      }
+    },
+    "linkEntry": {
+      "type": "object",
+      "required": ["name", "url"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Display label for the link"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 1024,
+          "description": "Absolute URL the link points to"
         }
       }
     }

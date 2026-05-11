@@ -1,46 +1,52 @@
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-import type { Request } from 'express';
-import type { Database } from '../db';
-import type { XrpcHandler } from './server';
-import { XrpcError } from './server';
-import type { AuthenticatedRequest } from '../middleware/auth';
-import { createCommunityAgent } from '../services/atproto';
-import { createAuditLogService } from '../services/auditLog';
-import { checkAppVisibility, seedCollectionPermissions } from '../services/permissions';
-import { isAdminInList, normalizeAdmins } from '../lib/adminUtils';
-import { encodeCursor, decodeCursor } from '../lib/pagination';
-import { logger } from '../lib/logger';
-import { logWarning } from '../lib/errors';
+import type { Kysely } from "kysely";
+import { sql } from "kysely";
+import type { Request } from "express";
+import type { Database } from "../db";
+import type { XrpcHandler } from "./server";
+import { XrpcError } from "./server";
+import type { AuthenticatedRequest } from "../middleware/auth";
+import { createCommunityAgent } from "../services/atproto";
+import { createAuditLogService } from "../services/auditLog";
+import {
+  checkAppVisibility,
+  seedCollectionPermissions,
+} from "../services/permissions";
+import { isAdminInList, normalizeAdmins } from "../lib/adminUtils";
+import { encodeCursor, decodeCursor } from "../lib/pagination";
+import { logger } from "../lib/logger";
+import { logWarning } from "../lib/errors";
 
-export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db: Kysely<Database>) {
+export function registerCommunityHandlers(
+  handlers: Map<string, XrpcHandler>,
+  db: Kysely<Database>,
+) {
   const auditLog = createAuditLogService(db);
 
-  handlers.set('community.opensocial.getCommunity', {
-    type: 'query',
+  handlers.set("community.opensocial.getCommunity", {
+    type: "query",
     handler: async (params, req) => {
       const communityDid = params.did as string;
       const userDid = params.userDid as string | undefined;
 
       if (!communityDid) {
-        throw new XrpcError(400, 'InvalidRequest', 'did is required');
+        throw new XrpcError(400, "InvalidRequest", "did is required");
       }
 
       const community = await db
-        .selectFrom('communities')
+        .selectFrom("communities")
         .selectAll()
-        .where('did', '=', communityDid)
+        .where("did", "=", communityDid)
         .executeTakeFirst();
 
       if (!community) {
-        throw new XrpcError(404, 'CommunityNotFound', 'Community not found');
+        throw new XrpcError(404, "CommunityNotFound", "Community not found");
       }
 
       const appId = (req as AuthenticatedRequest).app_data?.app_id;
       if (appId) {
         const visibility = await checkAppVisibility(db, community.did, appId);
         if (!visibility.allowed) {
-          throw new XrpcError(403, 'PermissionDenied', visibility.reason);
+          throw new XrpcError(403, "PermissionDenied", visibility.reason);
         }
       }
 
@@ -55,26 +61,33 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
         try {
           const profileRes = await agent.api.com.atproto.repo.getRecord({
             repo: communityDid,
-            collection: 'community.opensocial.profile',
-            rkey: 'self',
+            collection: "community.opensocial.profile",
+            rkey: "self",
           });
           profile = profileRes.data.value as any;
         } catch (e) {
-          logWarning('Failed to fetch community profile', { error: e, communityDid });
+          logWarning("Failed to fetch community profile", {
+            error: e,
+            communityDid,
+          });
         }
 
         try {
           const adminsRes = await agent.api.com.atproto.repo.getRecord({
             repo: communityDid,
-            collection: 'community.opensocial.admins',
-            rkey: 'self',
+            collection: "community.opensocial.admins",
+            rkey: "self",
           });
           admins = (adminsRes.data.value as any)?.admins || [];
           if (userDid) {
             isAdmin = isAdminInList(userDid, admins);
           }
         } catch (e) {
-          logWarning('Failed to fetch community admins', { error: e, communityDid, userDid });
+          logWarning("Failed to fetch community admins", {
+            error: e,
+            communityDid,
+            userDid,
+          });
         }
 
         try {
@@ -83,7 +96,7 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
           do {
             const membersRes = await agent.api.com.atproto.repo.listRecords({
               repo: communityDid,
-              collection: 'community.opensocial.membershipProof',
+              collection: "community.opensocial.membershipProof",
               limit: 100,
               cursor: memberCursor,
             });
@@ -92,10 +105,16 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
           } while (memberCursor);
           memberCount = count;
         } catch (e) {
-          logWarning('Failed to count community members', { error: e, communityDid });
+          logWarning("Failed to count community members", {
+            error: e,
+            communityDid,
+          });
         }
       } catch (e) {
-        logWarning('Failed to create community agent', { error: e, communityDid });
+        logWarning("Failed to create community agent", {
+          error: e,
+          communityDid,
+        });
       }
 
       return {
@@ -103,9 +122,9 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
           did: community.did,
           handle: community.handle,
           displayName: profile.displayName || community.display_name,
-          description: profile.description || '',
-          guidelines: profile.guidelines || '',
-          type: profile.type || 'open',
+          description: profile.description || "",
+          guidelines: profile.guidelines || "",
+          type: profile.type || "open",
           avatar: profile.avatar || null,
           banner: profile.banner || null,
           admins: normalizeAdmins(admins).map((a) => a.did),
@@ -117,8 +136,8 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
     },
   });
 
-  handlers.set('community.opensocial.searchCommunities', {
-    type: 'query',
+  handlers.set("community.opensocial.searchCommunities", {
+    type: "query",
     handler: async (params, req) => {
       const query = params.query as string | undefined;
       const userDid = params.userDid as string | undefined;
@@ -128,19 +147,23 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
 
       const trimmedQuery = query?.trim();
       if (trimmedQuery && trimmedQuery.length > 0 && trimmedQuery.length < 3) {
-        throw new XrpcError(400, 'QueryTooShort', 'Search query must be at least 3 characters');
+        throw new XrpcError(
+          400,
+          "QueryTooShort",
+          "Search query must be at least 3 characters",
+        );
       }
 
-      let dbQuery = db.selectFrom('communities').selectAll();
+      let dbQuery = db.selectFrom("communities").selectAll();
 
       if (trimmedQuery && trimmedQuery.length >= 3) {
         dbQuery = dbQuery.where((eb) =>
           eb.or([
-            eb(sql`similarity(handle, ${trimmedQuery})`, '>', sql`0.15`),
-            eb(sql`similarity(display_name, ${trimmedQuery})`, '>', sql`0.15`),
-            sql<boolean>`handle ILIKE ${'%' + trimmedQuery + '%'}`,
-            sql<boolean>`display_name ILIKE ${'%' + trimmedQuery + '%'}`,
-          ])
+            eb(sql`similarity(handle, ${trimmedQuery})`, ">", sql`0.15`),
+            eb(sql`similarity(display_name, ${trimmedQuery})`, ">", sql`0.15`),
+            sql<boolean>`handle ILIKE ${"%" + trimmedQuery + "%"}`,
+            sql<boolean>`display_name ILIKE ${"%" + trimmedQuery + "%"}`,
+          ]),
         );
       }
 
@@ -149,7 +172,7 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
           trimmedQuery && trimmedQuery.length >= 3
             ? sql`GREATEST(similarity(handle, ${trimmedQuery}), similarity(display_name, ${trimmedQuery}))`
             : sql`COALESCE(member_count, 0)`,
-          'desc'
+          "desc",
         )
         .offset(offset)
         .limit(limit + 1)
@@ -162,12 +185,16 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
       const enrichedUnfiltered = await Promise.all(
         page.map(async (community) => {
           if (appId) {
-            const visibility = await checkAppVisibility(db, community.did, appId);
+            const visibility = await checkAppVisibility(
+              db,
+              community.did,
+              appId,
+            );
             if (!visibility.allowed) return null;
           }
 
           let isAdmin = false;
-          let type = 'open';
+          let type = "open";
           let memberCount = community.member_count || 0;
 
           try {
@@ -176,29 +203,38 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
             try {
               const profileRes = await agent.api.com.atproto.repo.getRecord({
                 repo: community.did,
-                collection: 'community.opensocial.profile',
-                rkey: 'self',
+                collection: "community.opensocial.profile",
+                rkey: "self",
               });
-              type = (profileRes.data.value as any)?.type || 'open';
+              type = (profileRes.data.value as any)?.type || "open";
             } catch (e) {
-              logWarning('Failed to fetch community profile', { error: e, communityDid: community.did });
+              logWarning("Failed to fetch community profile", {
+                error: e,
+                communityDid: community.did,
+              });
             }
 
             if (userDid) {
               try {
                 const adminsRes = await agent.api.com.atproto.repo.getRecord({
                   repo: community.did,
-                  collection: 'community.opensocial.admins',
-                  rkey: 'self',
+                  collection: "community.opensocial.admins",
+                  rkey: "self",
                 });
                 const admins = (adminsRes.data.value as any)?.admins || [];
                 isAdmin = isAdminInList(userDid, admins);
               } catch (e) {
-                logWarning('Failed to fetch community admins', { error: e, communityDid: community.did });
+                logWarning("Failed to fetch community admins", {
+                  error: e,
+                  communityDid: community.did,
+                });
               }
             }
           } catch (e) {
-            logWarning('Failed to create community agent for enrichment', { error: e, communityDid: community.did });
+            logWarning("Failed to create community agent for enrichment", {
+              error: e,
+              communityDid: community.did,
+            });
           }
 
           return {
@@ -208,8 +244,12 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
             type,
             isAdmin,
             memberCount,
+            createdAt:
+              community.created_at instanceof Date
+                ? community.created_at.toISOString()
+                : community.created_at,
           };
-        })
+        }),
       );
 
       const communities = enrichedUnfiltered.filter(Boolean);
@@ -221,33 +261,37 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
     },
   });
 
-  handlers.set('community.opensocial.getPermissions', {
-    type: 'query',
+  handlers.set("community.opensocial.getPermissions", {
+    type: "query",
     handler: async (params, req) => {
       const communityDid = params.communityDid as string;
       const userDid = params.userDid as string | undefined;
 
       if (!communityDid) {
-        throw new XrpcError(400, 'InvalidRequest', 'communityDid is required');
+        throw new XrpcError(400, "InvalidRequest", "communityDid is required");
       }
 
       const appId = (req as AuthenticatedRequest).app_data?.app_id;
       if (!appId) {
-        throw new XrpcError(401, 'InvalidRequest', 'App identification required');
+        throw new XrpcError(
+          401,
+          "InvalidRequest",
+          "App identification required",
+        );
       }
 
       const visibility = await checkAppVisibility(db, communityDid, appId);
       if (!visibility.allowed) {
-        throw new XrpcError(403, 'PermissionDenied', visibility.reason);
+        throw new XrpcError(403, "PermissionDenied", visibility.reason);
       }
 
       // Collection permissions
       let permRows = await db
-        .selectFrom('community_app_collection_permissions')
+        .selectFrom("community_app_collection_permissions")
         .selectAll()
-        .where('community_did', '=', communityDid)
-        .where('app_id', '=', appId)
-        .orderBy('collection', 'asc')
+        .where("community_did", "=", communityDid)
+        .where("app_id", "=", appId)
+        .orderBy("collection", "asc")
         .execute();
 
       let permissions;
@@ -261,10 +305,10 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
         }));
       } else {
         const defaultRows = await db
-          .selectFrom('app_default_permissions')
+          .selectFrom("app_default_permissions")
           .selectAll()
-          .where('app_id', '=', appId)
-          .orderBy('collection', 'asc')
+          .where("app_id", "=", appId)
+          .orderBy("collection", "asc")
           .execute();
 
         permissions = defaultRows.map((r) => ({
@@ -287,7 +331,7 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
           do {
             const membersRes = await agent.api.com.atproto.repo.listRecords({
               repo: communityDid,
-              collection: 'community.opensocial.membershipProof',
+              collection: "community.opensocial.membershipProof",
               limit: 100,
               cursor,
             });
@@ -297,30 +341,37 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
             cursor = membersRes.data.cursor;
           } while (cursor && !isMember);
 
-          if (isMember) userRoles.push('member');
+          if (isMember) userRoles.push("member");
 
           try {
             const adminsRes = await agent.api.com.atproto.repo.getRecord({
               repo: communityDid,
-              collection: 'community.opensocial.admins',
-              rkey: 'self',
+              collection: "community.opensocial.admins",
+              rkey: "self",
             });
             const admins = (adminsRes.data.value as any)?.admins || [];
             if (isAdminInList(userDid, admins)) {
-              userRoles.push('admin');
+              userRoles.push("admin");
             }
           } catch (e) {
-            logWarning('Failed to check admin status', { error: e, communityDid, userDid });
+            logWarning("Failed to check admin status", {
+              error: e,
+              communityDid,
+              userDid,
+            });
           }
         } catch (e) {
-          logger.warn({ error: e, communityDid, userDid }, 'Failed to resolve user roles from PDS');
+          logger.warn(
+            { error: e, communityDid, userDid },
+            "Failed to resolve user roles from PDS",
+          );
         }
 
         const customRoles = await db
-          .selectFrom('community_member_roles')
-          .select('role_name')
-          .where('community_did', '=', communityDid)
-          .where('member_did', '=', userDid)
+          .selectFrom("community_member_roles")
+          .select("role_name")
+          .where("community_did", "=", communityDid)
+          .where("member_did", "=", userDid)
           .execute();
         for (const r of customRoles) {
           if (!userRoles.includes(r.role_name)) {
@@ -333,54 +384,91 @@ export function registerCommunityHandlers(handlers: Map<string, XrpcHandler>, db
     },
   });
 
-  handlers.set('community.opensocial.deleteCommunity', {
-    type: 'procedure',
+  handlers.set("community.opensocial.deleteCommunity", {
+    type: "procedure",
     handler: async (input, req) => {
       const { communityDid, adminDid } = input;
       if (!communityDid || !adminDid) {
-        throw new XrpcError(400, 'InvalidInput', 'communityDid and adminDid are required');
+        throw new XrpcError(
+          400,
+          "InvalidInput",
+          "communityDid and adminDid are required",
+        );
       }
 
       const community = await db
-        .selectFrom('communities')
+        .selectFrom("communities")
         .selectAll()
-        .where('did', '=', communityDid)
+        .where("did", "=", communityDid)
         .executeTakeFirst();
       if (!community) {
-        throw new XrpcError(404, 'CommunityNotFound', 'Community not found');
+        throw new XrpcError(404, "CommunityNotFound", "Community not found");
       }
 
       try {
         const agent = await createCommunityAgent(db, communityDid);
         const adminsRes = await agent.api.com.atproto.repo.getRecord({
           repo: communityDid,
-          collection: 'community.opensocial.admins',
-          rkey: 'self',
+          collection: "community.opensocial.admins",
+          rkey: "self",
         });
         const admins = (adminsRes.data.value as any)?.admins || [];
         if (!isAdminInList(adminDid, admins)) {
-          throw new XrpcError(403, 'PermissionDenied', 'Not an admin of this community');
+          throw new XrpcError(
+            403,
+            "PermissionDenied",
+            "Not an admin of this community",
+          );
         }
         if (normalizeAdmins(admins).length > 1) {
-          throw new XrpcError(400, 'MultipleAdmins', 'Community must have only one admin to be deleted. Remove other admins first.');
+          throw new XrpcError(
+            400,
+            "MultipleAdmins",
+            "Community must have only one admin to be deleted. Remove other admins first.",
+          );
         }
       } catch (e) {
         if (e instanceof XrpcError) throw e;
-        throw new XrpcError(500, 'InternalServerError', 'Failed to verify admin status');
+        throw new XrpcError(
+          500,
+          "InternalServerError",
+          "Failed to verify admin status",
+        );
       }
 
-      await db.deleteFrom('communities').where('did', '=', communityDid).execute();
-      await db.deleteFrom('pending_members').where('community_did', '=', communityDid).execute();
-      await db.deleteFrom('community_settings').where('community_did', '=', communityDid).execute();
-      await db.deleteFrom('community_app_visibility').where('community_did', '=', communityDid).execute();
-      await db.deleteFrom('community_app_collection_permissions').where('community_did', '=', communityDid).execute();
-      await db.deleteFrom('community_roles').where('community_did', '=', communityDid).execute();
-      await db.deleteFrom('community_member_roles').where('community_did', '=', communityDid).execute();
+      await db
+        .deleteFrom("communities")
+        .where("did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("pending_members")
+        .where("community_did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("community_settings")
+        .where("community_did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("community_app_visibility")
+        .where("community_did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("community_app_collection_permissions")
+        .where("community_did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("community_roles")
+        .where("community_did", "=", communityDid)
+        .execute();
+      await db
+        .deleteFrom("community_member_roles")
+        .where("community_did", "=", communityDid)
+        .execute();
 
       await auditLog.log({
         communityDid,
         adminDid,
-        action: 'community.deleted',
+        action: "community.deleted",
       });
 
       return {};
