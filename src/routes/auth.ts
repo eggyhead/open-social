@@ -119,9 +119,7 @@ function ifString(val: unknown): string | undefined {
 /**
  * Resolve a Bluesky profile to get handle, display name, and avatar.
  */
-async function resolveBlueskyProfile(
-  did: string,
-): Promise<{
+async function resolveBlueskyProfile(did: string): Promise<{
   handle: string | null;
   displayName: string | null;
   avatar: string | null;
@@ -699,11 +697,9 @@ export function createAuthRouter(
               { error: err, handle: existingDid },
               "Failed to resolve handle",
             );
-            return res
-              .status(400)
-              .json({
-                error: `Could not resolve handle "${existingDid}" to a DID`,
-              });
+            return res.status(400).json({
+              error: `Could not resolve handle "${existingDid}" to a DID`,
+            });
           }
         }
 
@@ -1098,7 +1094,7 @@ export function createAuthRouter(
       let profileValue: CommunityProfile = {
         displayName: community.display_name || community.handle,
         description: "",
-        type: "open",
+        type: (community as any).community_type || "open",
       } as CommunityProfile;
       if (recordAgent) {
         try {
@@ -1202,6 +1198,29 @@ export function createAuthRouter(
           return proof.value.cid === userMembership.cid;
         });
 
+      // Determine membership status: active, pending, or null.
+      // Check both PDS records (userMembership) and the pending_members DB table,
+      // since a pending join request may exist in the DB before the PDS record is created
+      // (e.g. for admin-approved communities).
+      let membershipStatus: "active" | "pending" | null = isMember
+        ? "active"
+        : userMembership
+          ? "pending"
+          : null;
+
+      if (!membershipStatus) {
+        const pendingRow = await db
+          .selectFrom("pending_members" as any)
+          .selectAll()
+          .where("community_did", "=", communityDid)
+          .where("user_did", "=", agent.assertDid)
+          .where("status", "=", "pending")
+          .executeTakeFirst();
+        if (pendingRow) {
+          membershipStatus = "pending";
+        }
+      }
+
       return res.json({
         community: {
           did: communityDid,
@@ -1217,6 +1236,7 @@ export function createAuthRouter(
         isPrimaryAdmin: agent.assertDid === primaryAdminDid,
         isAuthenticated: true,
         userRole,
+        membershipStatus,
         // Only expose credential error flag to admins
         credentialError: isAdmin ? credentialError : undefined,
       });
@@ -1276,6 +1296,23 @@ export function createAuthRouter(
         return res.json({
           status: "already_member",
           message: "You are already a member of this community",
+        });
+      }
+
+      // Check if user already has a pending membership request
+      const existingPending = await db
+        .selectFrom("pending_members")
+        .selectAll()
+        .where("community_did", "=", communityDid)
+        .where("user_did", "=", agent.assertDid)
+        .where("status", "=", "pending")
+        .executeTakeFirst();
+
+      if (existingPending) {
+        return res.json({
+          status: "already_member",
+          message:
+            "You already have a pending membership request for this community",
         });
       }
 
@@ -1739,12 +1776,10 @@ export function createAuthRouter(
           // Use uploaded file
           const file = req.file;
           if (!file) {
-            return res
-              .status(400)
-              .json({
-                error:
-                  "No file uploaded. Send a banner file or set reuseBluesky=true",
-              });
+            return res.status(400).json({
+              error:
+                "No file uploaded. Send a banner file or set reuseBluesky=true",
+            });
           }
 
           const uploadResponse =
@@ -1813,11 +1848,9 @@ export function createAuthRouter(
 
         // Validate type if provided
         if (type && !["open", "admin-approved", "private"].includes(type)) {
-          return res
-            .status(400)
-            .json({
-              error: 'type must be "open", "admin-approved", or "private"',
-            });
+          return res.status(400).json({
+            error: 'type must be "open", "admin-approved", or "private"',
+          });
         }
 
         // Get community from database
@@ -2776,11 +2809,9 @@ export function createAuthRouter(
 
         // Verify new owner is already an admin
         if (!isAdminInList(newOwnerDid, admins)) {
-          return res
-            .status(400)
-            .json({
-              error: "New owner must already be an admin. Promote them first.",
-            });
+          return res.status(400).json({
+            error: "New owner must already be an admin. Promote them first.",
+          });
         }
 
         // Reorder: new owner goes first (becomes primary)
@@ -3350,12 +3381,10 @@ export function createAuthRouter(
           action: "role.created",
           metadata: { name, displayName, visible, canViewAuditLog },
         });
-        res
-          .status(201)
-          .json({
-            success: true,
-            role: { name, displayName, description, visible, canViewAuditLog },
-          });
+        res.status(201).json({
+          success: true,
+          role: { name, displayName, description, visible, canViewAuditLog },
+        });
       } catch (error) {
         logger.error(
           { error, communityDid: req.params.did },
@@ -3849,12 +3878,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error listing hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to list hierarchy relationships",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to list hierarchy relationships",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -3966,12 +3993,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error listing pending hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to list pending hierarchy requests",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to list pending hierarchy requests",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4090,12 +4115,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error fetching hierarchy content",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to fetch hierarchy content",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to fetch hierarchy content",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4158,12 +4181,9 @@ export function createAuthRouter(
               (r: any) => r.value.counterpartyDid === parentDid,
             )
           ) {
-            return res
-              .status(409)
-              .json({
-                error:
-                  "A hierarchy relationship with this parent already exists",
-              });
+            return res.status(409).json({
+              error: "A hierarchy relationship with this parent already exists",
+            });
           }
           cursor = existing.data.cursor;
         } while (cursor);
@@ -4221,12 +4241,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error requesting hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to request hierarchy relationship",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to request hierarchy relationship",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4288,12 +4306,9 @@ export function createAuthRouter(
               (r: any) => r.value.counterpartyDid === childDid,
             )
           ) {
-            return res
-              .status(409)
-              .json({
-                error:
-                  "A hierarchy relationship with this child already exists",
-              });
+            return res.status(409).json({
+              error: "A hierarchy relationship with this child already exists",
+            });
           }
           cursor = existing.data.cursor;
         } while (cursor);
@@ -4351,12 +4366,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error inviting child",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to invite child community",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to invite child community",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4418,11 +4431,9 @@ export function createAuthRouter(
               (r: any) => r.value.counterpartyDid === childDid,
             )
           ) {
-            return res
-              .status(409)
-              .json({
-                error: "This hierarchy relationship has already been approved",
-              });
+            return res.status(409).json({
+              error: "This hierarchy relationship has already been approved",
+            });
           }
           pCursor = existing.data.cursor;
         } while (pCursor);
@@ -4457,12 +4468,10 @@ export function createAuthRouter(
         } while (cCursor);
 
         if (!childRecordRkey) {
-          return res
-            .status(404)
-            .json({
-              error:
-                "No pending hierarchy request found from this child community",
-            });
+          return res.status(404).json({
+            error:
+              "No pending hierarchy request found from this child community",
+          });
         }
 
         // Update child's record to approved
@@ -4525,12 +4534,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error approving hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to approve hierarchy relationship",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to approve hierarchy relationship",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4592,12 +4599,9 @@ export function createAuthRouter(
               (r: any) => r.value.counterpartyDid === parentDid,
             )
           ) {
-            return res
-              .status(409)
-              .json({
-                error:
-                  "A hierarchy relationship with this parent already exists",
-              });
+            return res.status(409).json({
+              error: "A hierarchy relationship with this parent already exists",
+            });
           }
           eCursor = existing.data.cursor;
         } while (eCursor);
@@ -4632,12 +4636,10 @@ export function createAuthRouter(
         } while (pCursor);
 
         if (!parentRecordRkey) {
-          return res
-            .status(404)
-            .json({
-              error:
-                "No pending hierarchy invite found from this parent community",
-            });
+          return res.status(404).json({
+            error:
+              "No pending hierarchy invite found from this parent community",
+          });
         }
 
         // Update parent's record to approved
@@ -4700,12 +4702,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error accepting hierarchy invite",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to accept hierarchy invite",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to accept hierarchy invite",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4859,12 +4859,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error rejecting hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to reject hierarchy request",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to reject hierarchy request",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
@@ -4998,12 +4996,10 @@ export function createAuthRouter(
           { error, communityDid: req.params.did },
           "Error revoking hierarchy",
         );
-        res
-          .status(500)
-          .json({
-            error: "Failed to revoke hierarchy relationship",
-            details: error instanceof Error ? error.message : "Unknown error",
-          });
+        res.status(500).json({
+          error: "Failed to revoke hierarchy relationship",
+          details: error instanceof Error ? error.message : "Unknown error",
+        });
       }
     },
   );
