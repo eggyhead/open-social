@@ -64,7 +64,9 @@ export function createAppRouter(
 
   // Register a new app (requires OAuth session — user must be logged in)
   router.post("/register", async (req: Request, res: Response) => {
+    let stage = "init";
     try {
+      stage = "auth";
       const agent = await getSessionAgent(req, res, oauthClient);
       if (!agent) {
         return res
@@ -72,8 +74,13 @@ export function createAppRouter(
           .json({ error: "Not authenticated. Log in to register an app." });
       }
 
+      stage = "validate";
       const parsed = registerAppWithPermissionsSchema.safeParse(req.body);
       if (!parsed.success) {
+        logger.warn(
+          { did: agent.assertDid, issues: parsed.error.flatten() },
+          "App registration rejected: invalid input",
+        );
         return res
           .status(400)
           .json({ error: "Invalid input", details: parsed.error.flatten() });
@@ -87,11 +94,9 @@ export function createAppRouter(
           effectiveAuthMethod === "both") &&
         !cimdUrl
       ) {
-        return res
-          .status(400)
-          .json({
-            error: "cimdUrl is required when using http_signature auth",
-          });
+        return res.status(400).json({
+          error: "cimdUrl is required when using http_signature auth",
+        });
       }
 
       // Validate CIMD document is reachable when using HTTP signature auth
@@ -122,6 +127,7 @@ export function createAppRouter(
       }
 
       // Check for duplicate domain
+      stage = "duplicate_check";
       const existing = await db
         .selectFrom("apps")
         .selectAll()
@@ -142,10 +148,12 @@ export function createAppRouter(
         ? `osc_${crypto.randomBytes(32).toString("hex")}`
         : null;
       // For http_signature-only apps, store a unique random hash to satisfy NOT NULL + UNIQUE
+      stage = "hash_key";
       const apiKeyHash = needsApiKey
         ? hashApiKey(apiKey!)
         : `nosecret_${crypto.randomBytes(32).toString("hex")}`;
 
+      stage = "insert_app";
       await db
         .insertInto("apps")
         .values({
@@ -164,6 +172,7 @@ export function createAppRouter(
 
       // Store default collection permissions if provided
       if (defaultPermissions && defaultPermissions.length > 0) {
+        stage = "insert_permissions";
         for (const perm of defaultPermissions) {
           await db
             .insertInto("app_default_permissions")
@@ -200,8 +209,59 @@ export function createAppRouter(
 
       return res.json(response);
     } catch (err) {
-      logger.error({ error: err }, "Error registering app");
-      return res.status(500).json({ error: "Failed to register app" });
+      const pgError = err as {
+        code?: string;
+        column?: string;
+        constraint?: string;
+        detail?: string;
+        message?: string;
+      };
+      logger.error(
+        {
+          stage,
+          error: err,
+          errorMessage: pgError?.message,
+          errorCode: pgError?.code,
+          errorColumn: pgError?.column,
+          errorConstraint: pgError?.constraint,
+          errorDetail: pgError?.detail,
+          body: {
+            name: req.body?.name,
+            domain: req.body?.domain,
+            authMethod: req.body?.authMethod,
+            hasCimdUrl: Boolean(req.body?.cimdUrl),
+            permissionCount: Array.isArray(req.body?.defaultPermissions)
+              ? req.body.defaultPermissions.length
+              : 0,
+          },
+        },
+        "Error registering app",
+      );
+
+      // Known Postgres error codes — return clearer 4xx where appropriate
+      if (pgError?.code === "23505") {
+        // unique_violation
+        return res.status(409).json({
+          error: "Duplicate value violates a unique constraint",
+          detail: pgError.detail || pgError.constraint || undefined,
+        });
+      }
+      if (pgError?.code === "42703" || pgError?.code === "42P01") {
+        // undefined_column / undefined_table — schema is missing
+        return res.status(500).json({
+          error:
+            "Database schema is out of date. Run `npm run migrate:up` and restart the server.",
+          detail: pgError.message,
+        });
+      }
+
+      const exposeDetail = config.nodeEnv !== "production";
+      return res.status(500).json({
+        error: "Failed to register app",
+        ...(exposeDetail && pgError?.message
+          ? { detail: pgError.message, stage }
+          : {}),
+      });
     }
   });
 
@@ -333,11 +393,9 @@ export function createAppRouter(
           effectiveAuthMethod === "both") &&
         !effectiveCimdUrl
       ) {
-        return res
-          .status(400)
-          .json({
-            error: "cimdUrl is required when using http_signature auth",
-          });
+        return res.status(400).json({
+          error: "cimdUrl is required when using http_signature auth",
+        });
       }
 
       // Probe the CIMD document when activating HTTP signature auth with a new cimdUrl
@@ -485,11 +543,9 @@ export function createAppRouter(
       const signatureInput = req.headers["signature-input"] as string;
 
       if (!apiKey && !signatureInput) {
-        return res
-          .status(401)
-          .json({
-            error: "API key (X-Api-Key header) or HTTP signature required",
-          });
+        return res.status(401).json({
+          error: "API key (X-Api-Key header) or HTTP signature required",
+        });
       }
 
       if (apiKey) {
@@ -522,11 +578,9 @@ export function createAppRouter(
 
       // HTTP signature verification path — perform full verification
       if (!req.headers["signature"]) {
-        return res
-          .status(401)
-          .json({
-            error: "Both Signature and Signature-Input headers are required",
-          });
+        return res.status(401).json({
+          error: "Both Signature and Signature-Input headers are required",
+        });
       }
 
       const keyIdMatch = signatureInput.match(/keyid="([^"]*)"/);
@@ -553,11 +607,9 @@ export function createAppRouter(
       }
 
       if (app.auth_method !== "http_signature" && app.auth_method !== "both") {
-        return res
-          .status(401)
-          .json({
-            error: "This app is not configured for HTTP signature auth",
-          });
+        return res.status(401).json({
+          error: "This app is not configured for HTTP signature auth",
+        });
       }
 
       const cimd = await getCimdDocument(app.domain, false, app.cimd_url);

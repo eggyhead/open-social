@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-migrations/
 .env
 *.log
 .DS_Store
