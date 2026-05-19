@@ -428,6 +428,8 @@ export function createAuthRouter(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
+      res.setHeader("cache-control", "no-store");
+
       // Fetch user's membership records
       const membershipsResponse = await agent.api.com.atproto.repo.listRecords({
         repo: agent.assertDid,
@@ -562,6 +564,8 @@ export function createAuthRouter(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
+      res.setHeader("cache-control", "no-store");
+
       const userDid = agent.assertDid;
       const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
       const cursor =
@@ -610,6 +614,8 @@ export function createAuthRouter(
       if (!agent) {
         return res.status(401).json({ error: "Not authenticated" });
       }
+
+      res.setHeader("cache-control", "no-store");
 
       const userDid = agent.assertDid;
       const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
@@ -1038,6 +1044,7 @@ export function createAuthRouter(
   router.get("/communities/:did", async (req: Request, res: Response) => {
     try {
       const agent = await getSessionAgent(req, res, oauthClient);
+      res.setHeader("cache-control", "no-store");
 
       const communityDid = decodeURIComponent(req.params.did);
 
@@ -1199,9 +1206,12 @@ export function createAuthRouter(
       const isMember =
         isAdmin ||
         proofsRecords.some((proof: any) => {
-          // Check if this proof matches the user's membership CID
           if (!userMembership) return false;
-          return proof.value.cid === userMembership.cid;
+          // Match by memberDid (primary) or CID (legacy).
+          return (
+            proof.value.memberDid === agent.assertDid ||
+            proof.value.cid === userMembership.cid
+          );
         });
 
       // Determine membership status: active, pending, or null.
