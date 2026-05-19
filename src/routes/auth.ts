@@ -428,6 +428,8 @@ export function createAuthRouter(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
+      res.setHeader("cache-control", "no-store");
+
       // Fetch user's membership records
       const membershipsResponse = await agent.api.com.atproto.repo.listRecords({
         repo: agent.assertDid,
@@ -562,6 +564,8 @@ export function createAuthRouter(
         return res.status(401).json({ error: "Not authenticated" });
       }
 
+      res.setHeader("cache-control", "no-store");
+
       const userDid = agent.assertDid;
       const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
       const cursor =
@@ -610,6 +614,8 @@ export function createAuthRouter(
       if (!agent) {
         return res.status(401).json({ error: "Not authenticated" });
       }
+
+      res.setHeader("cache-control", "no-store");
 
       const userDid = agent.assertDid;
       const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
