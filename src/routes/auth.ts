@@ -70,6 +70,7 @@ interface MembershipRecord {
 
 interface MembershipProofRecord {
   cid: string; // CID of the user's membership record
+  memberDid?: string; // DID of the member this proof confirms
 }
 
 // Helper to convert blob reference to CDN URL
@@ -503,8 +504,13 @@ export function createAuthRouter(
               const isConfirmed = proofsResponse.data.records.some(
                 (proof: any) => {
                   const proofValue = proof.value as MembershipProofRecord;
-                  // Check if the proof's CID matches the membership record's CID
-                  return proofValue.cid === membershipRecordResponse.data.cid;
+                  // Match by memberDid (primary) or CID (legacy).
+                  // The approval flow writes cid: "" so CID-only matching
+                  // would never confirm approved members.
+                  return (
+                    proofValue.memberDid === agent.assertDid ||
+                    proofValue.cid === membershipRecordResponse.data.cid
+                  );
                 },
               );
 
