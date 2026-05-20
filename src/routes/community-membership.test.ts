@@ -151,7 +151,6 @@ function setupCommunityInDb(db: Database, communityDid: string) {
       display_name: "Test Community",
       pds_host: "https://pds.example.com",
       app_password: "encrypted:test",
-      creator_did: ADMIN_DID,
     })
     .onConflict((oc) => oc.column("did").doNothing())
     .execute();
